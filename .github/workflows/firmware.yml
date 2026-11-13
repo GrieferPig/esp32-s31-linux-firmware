@@ -26,7 +26,8 @@ jobs:
         run: |
           bash -n ci/checkout.sh ci/setup.sh ci/build.sh
           python3 -m py_compile ci/metadata.py
-          python3 -m unittest discover -s source/tools/build/tests -p test_firmware_package.py -v
+          python3 ci/check_independence.py
+          python3 -m unittest discover -s tools/build/tests -p test_firmware_package.py -v
 
   build:
     needs: checks

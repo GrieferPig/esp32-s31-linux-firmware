@@ -9,7 +9,7 @@ urls = {line.split(' ', 1)[1] for line in modules.splitlines()}
 assert urls == {
     'https://github.com/GrieferPig/linux-esp32-s31.git',
     'https://github.com/GrieferPig/opensbi-esp32-s31',
-    'https://github.com/GrieferPig/u-boot-esp32-s31',
+    'https://github.com/GrieferPig/u-boot-esp32-s31.git',
 }, urls
 for name in ('setup.sh', 'build.sh', 'checkout.sh'):
     assert 'esp32-s31-linux.git' not in (root / 'ci' / name).read_text()

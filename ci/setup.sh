@@ -16,7 +16,7 @@ sudo apt-get install -y \
 # The source pin owns all SDK and compiler version selections.
 python3 - <<'PY' > work/versions.sh
 import shlex, sys
-sys.path.insert(0, 'source')
+sys.path.insert(0, '.')
 from tools.checks.versions import versions
 for key, value in versions().items():
     print(f'export {key}={shlex.quote(value)}')
@@ -33,7 +33,7 @@ git -C "$IDF_PATH" checkout --detach FETCH_HEAD
 git -C "$IDF_PATH" submodule update --init --recursive --depth 1
 "$IDF_PATH/install.sh" esp32s31
 
-make -C source OUT_ROOT="$root/work/producer" \
+make -C "$root" OUT_ROOT="$root/work/producer" \
   CACHE_DIR="$root/work/cache" toolchain-fetch
 
 python3 - <<'PY' >> work/versions.sh

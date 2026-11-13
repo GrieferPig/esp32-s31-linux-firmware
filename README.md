@@ -1,86 +1,62 @@
 # ESP32-S31 Linux firmware
 
-Builds and hosts versioned producer inputs for the ESP32-S31 Linux Buildroot
-workflow. The source submodule pins the main project's firmware, bootloader,
-interfaces and dependency versions.
-
-The archive includes SPL/U-Boot (with OpenSBI), LP firmware, the relocatable
-radio payload, generated imports, SDK configurations and provenance metadata.
-Buildroot builds its own kernel, module, device trees and root filesystem and
-links radio.bin against that kernel. A final radio.bin or old kernel module is
-never reused as a producer input.
+Standalone producer for boot firmware, LP firmware and the relocatable radio
+payload used by ESP32-S31 Linux. All producer sources and build scripts live
+here. There is no dependency on the esp32-s31-linux consumer repository.
 
 ## Build
 
-On Ubuntu 24.04 x86-64, with sudo available for host packages:
+On Ubuntu 24.04 x86-64, with sudo for host dependencies:
 
 ```sh
-git clone --recurse-submodules https://github.com/GrieferPig/esp32-s31-linux-firmware.git
+git clone https://github.com/GrieferPig/esp32-s31-linux-firmware.git
 cd esp32-s31-linux-firmware
 bash ci/checkout.sh
 bash ci/setup.sh
 bash ci/build.sh
 ```
 
-Allow substantial disk space and first-build download time. SDK, toolchains and
-outputs live under work/. Deliverables are under dist/. No board is accessed.
-The host distribution and IDF-managed Python environment are not a fully locked
-container; provenance records source and compiler identities without claiming
-bit-for-bit reproduction across arbitrary hosts.
+The direct submodules pin Linux radio interface headers, OpenSBI and U-Boot.
+The Linux kernel is not built. ci/setup.sh installs the SDK and compilers
+pinned by configs/build-versions.mk. Outputs and SDK tools live under work/;
+the verified firmware archive, metadata, checksums and notices live under dist/.
+Allow substantial disk space and first-build download time. No board is used.
+
+For component builds after setup, use make radio-linux-payload, make
+lp-firmware or make uboot with the paths exported in work/versions.sh and
+ESP-IDF's export.sh. ci/build.sh supplies all required paths automatically.
 
 ## CI and releases
 
-Main pushes run script checks and package regression tests. Pull requests and
-manual workflow runs also build and verify firmware. A fw-v* tag builds and
-publishes the checked package to a public GitHub Release:
+Main pushes run checks. Pull requests and manual runs also build and verify
+firmware. Pushing a fw-v* tag builds and publishes an immutable public release:
 
 ```sh
-git tag -a fw-v0.1.0 -m 'Initial firmware inputs'
-git push origin fw-v0.1.0
+git tag -a fw-v0.2.0 -m 'Standalone firmware producer'
+git push origin fw-v0.2.0
 ```
 
-Use a new version for every release; never overwrite assets. Only the release
-job receives contents: write. Actions are pinned by commit. Releases are
-immutable; the owner has requested public hosting. Licensing notices and the
-upstream package's engineering-only provenance remain attached.
+Update producer sources or direct submodule pins here, validate, then tag a new
+release. Only publishing receives contents: write. Actions are pinned by commit.
+Provenance records this repository's source identity, each direct source pin,
+ESP-IDF and compiler identities. It does not claim reproduction across arbitrary
+host environments. See MIGRATION.md for the original source attribution.
 
-To update firmware, update source to a reviewed main-project commit, commit the
-submodule pin here, validate a manual build, then tag the new producer commit.
-Release metadata records both producer and main-project commits and input ID.
+## Consumer boundary
 
-## Consume a release
+The consumer downloads the latest published release, checks its SHA256 and
+compares packaged kernel interfaces, memory layout and LP protocol against its
+own sources. It builds Linux, modules, device trees and rootfs, then links the
+final radio.bin against its actual kernel. A prelinked radio.bin or kernel
+module is never supplied as a reusable producer input.
 
-```sh
-gh release download fw-v0.1.0 \
-  --repo GrieferPig/esp32-s31-linux-firmware \
-  --pattern s31-firmware-inputs.tar --pattern SHA256SUMS \
-  --dir firmware-inputs
-sha256sum firmware-inputs/s31-firmware-inputs.tar
-```
-
-Compare the digest with the release notes or reviewed release.json. Buildroot
-can download the public versioned release URL directly:
-
-```text
-BR2_PACKAGE_S31_FIRMWARE_ARCHIVE="https://github.com/GrieferPig/esp32-s31-linux-firmware/releases/download/fw-v0.1.0/s31-firmware-inputs.tar"
-BR2_PACKAGE_S31_FIRMWARE_SHA256="93993f6f7257284b7b92c8f9cb98173f8ef1d3765aa51e9ac69b08c2a78c5b72"
-```
-
-The main project's image CI selects the latest published release at the start
-of every build and records its tag/hash. It verifies the package's interfaces
-against its own source and rejects incompatible releases.
-
-Use the source commit recorded in the release as the compatibility baseline.
-When replacing firmware inputs, save the custom Linux .config, select it as
-BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE, run make linux-dirclean, then make using
-the same output directory and BR2_EXTERNAL settings. The consumer checks the
-actual kernel interfaces and refuses stale inputs.
+Use the release notes for the exact public archive URL and SHA256. Archive
+schema 1 retains historical paths as metadata for compatibility. The consumer
+does not need this source checkout, ESP-IDF or the bare-metal compiler.
 
 ## Distribution status
 
-Public hosting was requested by the repository owner. The upstream packager
-still records engineering-only provenance; changing repository visibility
-does not modify vendor licenses or establish redistribution rights. See the
-licensing notices included in each archive.
-Host build and archive checks do not establish hardware boot, SSH, Wi-Fi or
-Bluetooth operation.
+Public hosting was requested by the owner. Packages retain engineering-only
+provenance and the vendor licensing notices. Hosting does not change license
+terms. CI validates build and package boundaries; hardware boot, SSH, Wi-Fi
+and Bluetooth require separate target testing.

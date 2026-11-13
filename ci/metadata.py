@@ -8,19 +8,21 @@ import subprocess
 root = Path(__file__).resolve().parents[1]
 dist = root / 'dist'
 git = lambda *args: subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
-source_sha = git('-C', 'source', 'rev-parse', 'HEAD')
+source_sha = git('rev-parse', 'HEAD')
+kernel_sha = git('-C', 'linux-esp32-s31', 'rev-parse', 'HEAD')
 manifest = json.loads((dist / 'firmware-inputs.json').read_text())
 archive_sha = hashlib.sha256((dist / 's31-firmware-inputs.tar').read_bytes()).hexdigest()
 tag = os.environ.get('GITHUB_REF_NAME', 'local')
 repo = os.environ.get('GITHUB_REPOSITORY', 'GrieferPig/esp32-s31-linux-firmware')
-record = dict(producer_commit=git('rev-parse', 'HEAD'), source_commit=source_sha,
+record = dict(producer_commit=git('rev-parse', 'HEAD'), firmware_source_commit=source_sha, kernel_interface_commit=kernel_sha,
               input_id=manifest['input_id'], archive_sha256=archive_sha,
               workflow_run=os.environ.get('GITHUB_RUN_ID'),
               license_mode=manifest['provenance']['license_mode'])
 (dist / 'release.json').write_text(json.dumps(record, indent=2) + '\n')
 notes = f'''Producer firmware inputs for ESP32-S31 Linux.
 
-Source commit: `{source_sha}`
+Firmware source commit: `{source_sha}`
+Kernel interface pin: `{kernel_sha}`
 Input identity: `{manifest['input_id']}`
 Archive SHA256: `{archive_sha}`
 
@@ -43,7 +45,8 @@ BR2_PACKAGE_S31_FIRMWARE_ARCHIVE="https://github.com/{repo}/releases/download/{t
 BR2_PACKAGE_S31_FIRMWARE_SHA256="{archive_sha}"
 ```
 
-Use source revision `{source_sha}` as the consumer compatibility baseline.
+The consumer verifies the packaged kernel headers, memory layout and LP protocol
+against its own sources. This producer does not check out the consumer repository.
 When changing firmware inputs, follow the firmware README's linux-dirclean
 procedure, preserving the custom Linux config first.
 '''

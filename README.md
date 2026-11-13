@@ -32,7 +32,7 @@ bit-for-bit reproduction across arbitrary hosts.
 
 Main pushes run script checks and package regression tests. Pull requests and
 manual workflow runs also build and verify firmware. A fw-v* tag builds and
-publishes the checked package to a private GitHub Release:
+publishes the checked package to a public GitHub Release:
 
 ```sh
 git tag -a fw-v0.1.0 -m 'Initial firmware inputs'
@@ -40,14 +40,15 @@ git push origin fw-v0.1.0
 ```
 
 Use a new version for every release; never overwrite assets. Only the release
-job receives contents: write. Actions are pinned by commit. Both artifact
-creation and release publishing require private repository visibility.
+job receives contents: write. Actions are pinned by commit. Releases are
+immutable; the owner has requested public hosting. Licensing notices and the
+upstream package's engineering-only provenance remain attached.
 
 To update firmware, update source to a reviewed main-project commit, commit the
 submodule pin here, validate a manual build, then tag the new producer commit.
 Release metadata records both producer and main-project commits and input ID.
 
-## Consume a private release
+## Consume a release
 
 ```sh
 gh release download fw-v0.1.0 \
@@ -57,11 +58,17 @@ gh release download fw-v0.1.0 \
 sha256sum firmware-inputs/s31-firmware-inputs.tar
 ```
 
-Compare the digest with the release notes or reviewed release.json. In the
-consumer's Buildroot menuconfig, set BR2_PACKAGE_S31_FIRMWARE_ARCHIVE to the
-absolute file:// URL and BR2_PACKAGE_S31_FIRMWARE_SHA256 to that digest. No
-GitHub credential belongs in a defconfig. A future authorized public release
-can use a versioned GitHub release download URL directly.
+Compare the digest with the release notes or reviewed release.json. Buildroot
+can download the public versioned release URL directly:
+
+```text
+BR2_PACKAGE_S31_FIRMWARE_ARCHIVE="https://github.com/GrieferPig/esp32-s31-linux-firmware/releases/download/fw-v0.1.0/s31-firmware-inputs.tar"
+BR2_PACKAGE_S31_FIRMWARE_SHA256="93993f6f7257284b7b92c8f9cb98173f8ef1d3765aa51e9ac69b08c2a78c5b72"
+```
+
+The main project's image CI selects the latest published release at the start
+of every build and records its tag/hash. It verifies the package's interfaces
+against its own source and rejects incompatible releases.
 
 Use the source commit recorded in the release as the compatibility baseline.
 When replacing firmware inputs, save the custom Linux .config, select it as
@@ -71,9 +78,9 @@ actual kernel interfaces and refuses stale inputs.
 
 ## Distribution status
 
-Engineering-only. The upstream packager and radio licensing notice do not
-authorize public redistribution. Review the vendor grants and provide exact
-corresponding sources before changing this policy. Private hosting does not
-itself grant distribution rights. See the notices included in each archive.
+Public hosting was requested by the repository owner. The upstream packager
+still records engineering-only provenance; changing repository visibility
+does not modify vendor licenses or establish redistribution rights. See the
+licensing notices included in each archive.
 Host build and archive checks do not establish hardware boot, SSH, Wi-Fi or
 Bluetooth operation.

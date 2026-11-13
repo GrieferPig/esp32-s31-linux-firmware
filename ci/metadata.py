@@ -29,16 +29,17 @@ It contains boot firmware, LP firmware and a relocatable radio payload.
 Buildroot builds the kernel/module/rootfs and links the final radio.bin.
 CI package verification does not establish board boot or wireless operation.
 
-For authenticated access to this private release:
+Download this public release:
 
 ```sh
 gh release download {tag} --repo {repo} \\
   --pattern s31-firmware-inputs.tar --pattern SHA256SUMS --dir firmware-inputs
 ```
 
-Set the archive URL to an absolute local file:// path and the trusted hash to:
+Buildroot configuration for this exact release:
 
 ```text
+BR2_PACKAGE_S31_FIRMWARE_ARCHIVE="https://github.com/{repo}/releases/download/{tag}/s31-firmware-inputs.tar"
 BR2_PACKAGE_S31_FIRMWARE_SHA256="{archive_sha}"
 ```
 

@@ -6,6 +6,14 @@ RADIO_SRC := $(patsubst %/,%,$(dir $(RADIO_MAKEFILE)))
 PROJECT_DIR := $(abspath $(RADIO_SRC)/../..)
 include $(PROJECT_DIR)/configs/build-versions.mk
 
+# Experimental, opt-in Wi-Fi-only payload. The default is the combined radio.
+S31_WIFI_ONLY ?= 0
+ifneq ($(S31_WIFI_ONLY),0)
+ifneq ($(S31_WIFI_ONLY),1)
+$(error S31_WIFI_ONLY must be 0 or 1)
+endif
+endif
+
 O ?= $(PROJECT_DIR)/out/radio
 RADIO_OUT := $(abspath $(O))
 GENERATED_DIR ?= $(abspath $(RADIO_OUT)/../generated)
@@ -77,6 +85,10 @@ LINUX_WRAP_APIS := r_orca_lmp_tbl_register r_os_memblock_put r_os_memblock_put_f
 	coex_register_start_cb  \
 	  \
 
+ifeq ($(S31_WIFI_ONLY),1)
+LINUX_WRAP_APIS := $(filter-out r_orca_lmp_tbl_register,$(LINUX_WRAP_APIS))
+LINUX_NOFREERTOS_LINK := $(filter-out %/libbredr_app.a %/libble_app.a %/libbtdm_common.a %/libbtbb.a,$(LINUX_NOFREERTOS_LINK))
+endif
 LINUX_WRAP_FLAGS := $(addprefix -Wl$(comma)--wrap=,$(LINUX_WRAP_APIS))
 
 .PHONY: all clean idf-check linux-radio linux-kbuild
@@ -117,7 +129,7 @@ $(LINUX_NET80211): $(IDF_NET80211)
 	cp $< $@
 
 linux_radio.raw.o: radio_stack.linux.o s31_pp_submit.o s31_vhci.o s31_vhci_pool_wake.o nofreertos_link.txt $(RADIO_SRC)/boot_flags.txt $(RADIO_SRC)/boot_linkpath.txt $(LINUX_NET80211) $(S31RTOS_LINUX_OBJS) $(RADIO_COEX_PRINTF_OBJ) $(RADIO_MAKEFILE) $(PROJECT_DIR)/tools/build/radio_tls.py $(RADIO_SRC)/prepare_xip_sections.py
-	$(ESP_CC) -nostdlib -r -Wl,--gc-sections -Wl,--unique=.iram1* -Wl,--unique=.wifi*iram* $(HEAP_WRAP_FLAGS) $(LINUX_WRAP_FLAGS) \
+	$(ESP_CC) -nostdlib -r -Wl,-Map,linux_radio.map -Wl,--gc-sections -Wl,--unique=.iram1* -Wl,--unique=.wifi*iram* $(HEAP_WRAP_FLAGS) $(LINUX_WRAP_FLAGS) \
 		-Wl,--undefined=s31_radio_stack_task \
 		-Wl,--undefined=s31_radio_wifi_control_task \
 		-Wl,--undefined=s31_radio_wifi_try_send_interface \
@@ -203,10 +215,10 @@ s31_pp_submit.S: $(IDF_PP) $(PROJECT_DIR)/tools/build/radio_pp_submit.py
 		--ar $(ESP_TOOLS)/bin/riscv32-esp-elf-ar --archive $(IDF_PP) --output $@
 s31_pp_submit.o: s31_pp_submit.S $(RADIO_MAKEFILE)
 	$(ESP_CC) $(ESP_CFLAGS) -c $< -o $@
-ifneq ($(origin S31_WIFI_ONLY),undefined)
-$(error S31_WIFI_ONLY is removed; every build includes Wi-Fi and Bluetooth)
-endif
 RADIO_STACK_DEFS := -DS31_LINUX_SMODE
+ifeq ($(S31_WIFI_ONLY),1)
+RADIO_STACK_DEFS += -DS31_WIFI_ONLY
+endif
 ESP_CFLAGS  := -Os -mabi=ilp32f -march=$(RADIO_ISA) \
 		-mtune=esp-base -ffunction-sections -fdata-sections \
 		-fno-stack-protector -fno-builtin -ffreestanding -std=gnu11 -Wall \

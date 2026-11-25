@@ -101,12 +101,16 @@ def select_iram_sections(payload, requested):
 def run(*args):
     subprocess.run([str(a) for a in args], check=True)
 
+def sram_manifest(args):
+    name = 'wifi_only_sram_symbols.txt' if args.wifi_only else 'wifi_sram_symbols.txt'
+    return Path(__file__).resolve().parents[2] / 'firmware/radio' / name
+
 def input_identity(args):
     root = Path(__file__).resolve().parents[2]
     files = {'kernel_vmlinux': args.kernel, 'kernel_module': args.module,
              'radio_payload': args.payload, 'radio_imports': args.imports,
              'builder': Path(__file__), 'toolchain_identity': root / 'tools/build/toolchain_identity.py', 'layout': root / 'configs/esp32s31-layout.cfg',
-             'wifi_sram_symbols': root / 'firmware/radio/wifi_sram_symbols.txt'}
+             'wifi_sram_symbols': sram_manifest(args)}
     for tool in ('gcc', 'ld', 'objcopy'):
         executable = shutil.which(args.prefix + tool)
         if executable is None:
@@ -140,7 +144,7 @@ def build(args):
     linked = {line.strip() for line in args.imports.read_text().splitlines()
               if line.strip() and not line.startswith('#')}
     # Fixed production placement; missing targets fail rather than fall back to flash.
-    manifest = Path(__file__).resolve().parents[2] / 'firmware/radio/wifi_sram_symbols.txt'
+    manifest = sram_manifest(args)
     payload = Elf(args.payload)
     requested = sorted(set(line.split('#', 1)[0].strip()
                            for line in manifest.read_text().splitlines()) - {''})
@@ -326,6 +330,7 @@ def main():
     p.add_argument('--payload', required=True, type=Path)
     p.add_argument('--imports', required=True, type=Path)
     p.add_argument('--output', required=True, type=Path)
+    p.add_argument('--wifi-only', action='store_true', help='Use the experimental Wi-Fi-only SRAM manifest')
     build(p.parse_args())
 
 if __name__ == '__main__':

@@ -39,6 +39,7 @@ class PackageTest(unittest.TestCase):
             for k in ('project', 'esp-idf', 'linux', 'u-boot', 'opensbi')},
             toolchains={k: 'e' * 64 for k in ('radio', 'boot', 'lp')},
             license_mode='engineering-only')
+        fw.record_radio_profile(self.out / fw.RADIO_PAYLOAD, 'combined')
         self.archive = self.base / 'inputs.tar'
         self.manifest = fw.create(self.root, self.out, self.archive, self.provenance)
 
@@ -198,12 +199,34 @@ class PackageTest(unittest.TestCase):
         struct.pack_into('<H', data, 16, 2)
         path.write_bytes(data)
         with self.assertRaisesRegex(ValueError, 'relocatable'):
-            fw.create(self.root, self.out, self.archive, self.provenance)
+            fw.record_radio_profile(path, 'combined')
 
     def test_public_release_rejected(self):
         self.provenance['license_mode'] = 'public'
         with self.assertRaisesRegex(ValueError, 'redistribution'):
             fw.create(self.root, self.out, self.archive, self.provenance)
+
+    def test_experimental_radio_rejected(self):
+        fw.record_radio_profile(self.out / fw.RADIO_PAYLOAD, 'wifi-only')
+        before = self.archive.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'experimental or stale'):
+            fw.create(self.root, self.out, self.archive, self.provenance)
+        self.assertEqual(before, self.archive.read_bytes())
+
+    def test_missing_radio_profile_rejected(self):
+        (self.out / fw.RADIO_PROFILE).unlink()
+        with self.assertRaisesRegex(ValueError, 'missing radio profile'):
+            fw.create(self.root, self.out, self.archive, self.provenance)
+
+    def test_stale_radio_profile_rejected(self):
+        path = self.out / fw.RADIO_PAYLOAD
+        path.write_bytes(path.read_bytes() + b'different payload')
+        with self.assertRaisesRegex(ValueError, 'experimental or stale'):
+            fw.create(self.root, self.out, self.archive, self.provenance)
+
+    def test_invalid_radio_profile_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'unknown radio profile'):
+            fw.record_radio_profile(self.out / fw.RADIO_PAYLOAD, 'unknown')
 
     def test_final_kernel_pairing_not_part_of_schema(self):
         self.assertNotIn('radio.bin', '\n'.join(fw.MEMBERS))

@@ -31,7 +31,9 @@
 
 extern void s31_linux_printf(const char *fmt, ...);
 extern uint64_t s31_linux_wall_time_seconds(void);
+#ifndef S31_WIFI_ONLY
 #include "s31_bt_lmp_reply.inc"
+#endif
 
 time_t __wrap_time(time_t *result)
 {
@@ -377,6 +379,7 @@ extern void s31_radio_wifi_intr_set_isr(uint32_t logical_intr,
 					void (*handler)(void *), void *arg);
 extern void s31_radio_wifi_intr_mask(uint32_t mask, bool enable);
 
+#ifndef S31_WIFI_ONLY
 static void s31_vhci_send_available(void)
 {
 	s31_radio_vhci_send_available();
@@ -391,6 +394,8 @@ static const esp_vhci_host_callback_t s31_vhci_callbacks = {
 	.notify_host_send_available = s31_vhci_send_available,
 	.notify_host_recv = s31_vhci_receive,
 };
+
+#endif
 
 enum s31_wifi_pending_operation {
 	S31_WIFI_PENDING_NONE,
@@ -719,6 +724,7 @@ non_scan_event:
 	}
 }
 
+#ifndef S31_WIFI_ONLY
 int s31_vhci_try_send_packet(uint8_t *data, uint16_t length);
 
 int s31_radio_vhci_try_send(uint8_t *frame, uint16_t length)
@@ -728,6 +734,15 @@ int s31_radio_vhci_try_send(uint8_t *frame, uint16_t length)
 
 	return s31_vhci_try_send_packet(frame, length);
 }
+
+#else
+int s31_radio_vhci_try_send(uint8_t *frame, uint16_t length)
+{
+	(void)frame;
+	(void)length;
+	return -1;
+}
+#endif
 
 void s31_radio_wifi_scan_task(void *arg)
 {
@@ -1129,6 +1144,7 @@ done:
 
 /* Called only before controller/PHY init, while the normal XIP mapping and
  * cache are available. Keep configuration-only code out of the hot IRAM tail. */
+#ifndef S31_WIFI_ONLY
 static void __attribute__((noinline)) s31_radio_bt_configure_init(
     esp_bt_controller_config_t *config, uintptr_t features)
 {
@@ -1140,16 +1156,29 @@ static void __attribute__((noinline)) s31_radio_bt_configure_init(
 
 }
 
+#endif
+
 void s31_radio_stack_task(void *arg)
 {
 	wifi_init_config_t wifi_cfg = WIFI_INIT_CONFIG_DEFAULT();
 	uintptr_t features = (uintptr_t)arg;
 	bool enable_wifi = (features & S31_RADIO_FEATURE_WIFI) != 0;
+#ifndef S31_WIFI_ONLY
 	esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+#endif
 	bool enable_bt = (features & S31_RADIO_FEATURE_BLUETOOTH) != 0;
 	int rc;
 
+#ifndef S31_WIFI_ONLY
 	s31_radio_bt_configure_init(&bt_cfg, features);
+#else
+	if (enable_bt) {
+		if (enable_wifi)
+			s31_radio_report_wifi_init(ESP_ERR_NOT_SUPPORTED);
+		s31_radio_report_bt_init(ESP_ERR_NOT_SUPPORTED);
+		return;
+	}
+#endif
 
 	pmu_init();
 	rc = s31_radio_clock_handoff();
@@ -1270,15 +1299,17 @@ void s31_radio_stack_task(void *arg)
 	 * frequency. With controller sleep disabled, the current SDK config uses
 	 * the internal RC source, matching the recorded stock-IDF benchmark.
 	 * Do not set only its source here: that skips frequency initialization. */
+#ifndef S31_WIFI_ONLY
 	rc = esp_bt_controller_init(&bt_cfg);
-
 	s31_radio_report_bt_init(rc);
+#endif
 
 }
 
 /* Linux installs the deferred CLIC route only after the init task has
  * blocked/deleted and returned control to its worker.  Controller enable is
  * therefore a distinct second-stage task. */
+#ifndef S31_WIFI_ONLY
 void s31_radio_bt_enable_task(void *arg)
 {
 	int rc;
@@ -1310,12 +1341,27 @@ void s31_radio_bt_disable_task(void *arg)
 	s31_radio_report_bt_disable(rc);
 }
 
+#else
+void s31_radio_bt_enable_task(void *arg)
+{
+	(void)arg;
+	s31_radio_report_bt_enable(ESP_ERR_NOT_SUPPORTED);
+}
+
+void s31_radio_bt_disable_task(void *arg)
+{
+	(void)arg;
+	s31_radio_report_bt_disable(ESP_ERR_NOT_SUPPORTED);
+}
+#endif
+
 void s31_radio_shutdown_task(void *arg)
 {
 	uintptr_t features = (uintptr_t)arg;
 	int result = 0;
 	int rc;
 
+#ifndef S31_WIFI_ONLY
 	if (features & S31_RADIO_FEATURE_BLUETOOTH) {
 		rc = esp_bt_controller_disable();
 		if (rc != 0 && rc != ESP_ERR_INVALID_STATE && !result)
@@ -1326,6 +1372,7 @@ void s31_radio_shutdown_task(void *arg)
 			result = rc;
 
 	}
+#endif
 	if (features & S31_RADIO_FEATURE_WIFI) {
 		esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
 					     s31_wifi_event);

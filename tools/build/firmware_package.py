@@ -28,6 +28,8 @@ ISA = 'rv32imafc_zicsr_zifencei_zaamo_zalrsc_xesploop_xespv2p2'
 ABI = 'ilp32f'
 LIMIT = 64 * 1024 * 1024
 MANIFEST = 'firmware-inputs.json'
+RADIO_PROFILE = 'radio/radio-profile.json'
+RADIO_PAYLOAD = 'radio/linux_radio.localized.o'
 # Archive paths intentionally match existing out/ consumers.
 ARTIFACTS = (
     'images/spl_app.bin', 'images/u-boot.itb',
@@ -170,9 +172,39 @@ def check_contents(files, manifest, expected):
         raise ValueError('empty package input')
 
 
+def record_radio_profile(payload, profile):
+    """Bind the selected build profile to the exact relocatable payload bytes."""
+    if profile not in ('combined', 'wifi-only'):
+        raise ValueError('unknown radio profile')
+    payload = Path(payload)
+    data = payload.read_bytes()
+    validate_elf(data)
+    path = payload.parent / 'radio-profile.json'
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(canonical(dict(profile=profile, payload_sha256=sha(data))))
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def require_combined_profile(output, payload):
+    """Schema 1 carries combined-radio inputs only; fail closed on stale data."""
+    path = Path(output) / RADIO_PROFILE
+    if not path.is_file():
+        raise ValueError('missing radio profile record; rebuild the radio payload')
+    record = strict_json(path.read_bytes())
+    if record != dict(profile='combined', payload_sha256=sha(payload)):
+        raise ValueError('radio profile is experimental or stale; rebuild combined payload')
+
+
 def create(root, output, archive, provenance):
     root, output, archive = Path(root), Path(output), Path(archive)
-    files = {p: (output / p).read_bytes() for p in ARTIFACTS}
+    payload = (output / RADIO_PAYLOAD).read_bytes()
+    require_combined_profile(output, payload)
+    files = {p: (output / p).read_bytes() for p in ARTIFACTS if p != RADIO_PAYLOAD}
+    files[RADIO_PAYLOAD] = payload
     files.update({'source/' + p: (root / p).read_bytes() for p in INTERFACES + NOTICES})
     manifest = dict(schema=SCHEMA, contract=contract(root), provenance=provenance,
                     files={p: {'sha256': sha(data), 'size': len(data)} for p, data in sorted(files.items())})
@@ -275,6 +307,9 @@ def capture_provenance(root, idf, radio_compiler, boot_compiler, lp_compiler):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
+    p = sub.add_parser('record-radio-profile')
+    p.add_argument('--payload', type=Path, required=True)
+    p.add_argument('--profile', choices=('combined', 'wifi-only'), required=True)
     p = sub.add_parser('provenance')
     p.add_argument('--root', type=Path, required=True)
     p.add_argument('--idf', type=Path, required=True)
@@ -296,7 +331,10 @@ def main():
                            help='staging only; requires subsequent verify --kernel-source before Linux build')
     args = parser.parse_args()
     try:
-        if args.command == 'provenance':
+        if args.command == 'record-radio-profile':
+            record_radio_profile(args.payload, args.profile)
+            return
+        elif args.command == 'provenance':
             result = capture_provenance(args.root, args.idf, args.radio_compiler, args.boot_compiler, args.lp_compiler)
         elif args.command == 'create':
             data = sys.stdin.buffer.read() if args.provenance == Path('-') else args.provenance.read_bytes()

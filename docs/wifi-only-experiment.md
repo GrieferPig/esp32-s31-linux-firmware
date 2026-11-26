@@ -17,3 +17,7 @@ Pinned producer base: 15ba03651e8a26fa5972ef01d63bbc9aa814a76a. ESP-IDF: 08e0d30
 ## Remaining binary audit
 
 Input section estimates from the reduced linker map: libnet80211 244174 bytes; libpp 78758; libphy 23293; libcoexist 6619. These are approximate input contributions, not exact XIP or total proprietary-code sizes. The largest libnet80211 contributors include connection management, ioctl, scan, output, STA, AP, HT and HE. Investigate root dependencies before removing members; do not infer dispensability from the member name. No new Wi-Fi reductions beyond the tested Bluetooth exclusion have been claimed.
+
+### Packaging boundary
+
+The localized payload build records `radio/radio-profile.json`, binding the selected profile to the exact ELF SHA-256. Schema-1 firmware input archives accept only combined-radio payloads with a matching build record. Missing, experimental or stale records fail closed at archive creation; rebuild the combined payload rather than relabeling a record. Existing schema-1 archive verification remains unchanged. This local build record is provenance evidence, not a signature or an authorization to redistribute proprietary inputs.

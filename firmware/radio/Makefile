@@ -181,10 +181,12 @@ linux-radio-localize.txt: linux_radio.resolved.o $(RADIO_MAKEFILE)
 		awk '{ n=$$NF; if (n !~ /^(s31_radio_fw_abi_version|s31_radio_(stack|shutdown|bt_(enable|disable)|wifi_(scan|connect|disconnect|control))_task|s31_radio_wifi_(read_mac|clock_enable|clock_disable)|s31_radio_(vhci|wifi)_try_send|s31_radio_wifi_try_send_interface|s31_radio_coex_status|s31_rtos_(init|tick|hard_tick|free|task_release|isr_depth)|s31_linux_timer_next_deadline_ns|xTaskCreatePinnedToCore)$$/) print n; }' | \
 		sort -u > $@
 
-linux_radio.localized.o: linux_radio.resolved.o linux-radio-localize.txt
+linux_radio.localized.o: linux_radio.resolved.o linux-radio-localize.txt $(PROJECT_DIR)/tools/build/firmware_package.py
 	$(ESP_TOOLS)/bin/riscv32-esp-elf-objcopy \
 		--strip-debug \
 		--localize-symbols=linux-radio-localize.txt $< $@
+	python3 $(PROJECT_DIR)/tools/build/firmware_package.py record-radio-profile \
+		--payload $@ --profile $(if $(filter 1,$(S31_WIFI_ONLY)),wifi-only,combined)
 
 linux_radio.kbuild.o: linux_radio.localized.o $(RADIO_SRC)/linux_module_sections.lds
 	$(ESP_TOOLS)/bin/riscv32-esp-elf-ld -r --no-relax \

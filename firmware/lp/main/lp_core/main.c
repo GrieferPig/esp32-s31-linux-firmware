@@ -8,6 +8,7 @@
 #include "ulp_lp_core_lp_timer_shared.h"
 #include "ulp_lp_core_utils.h"
 #include "hal/clk_tree_ll.h"
+#include "hal/lp_mailbox_ll.h"
 #include "hal/rtc_timer_ll.h"
 
 #include "../../../../shared/s31_lp_protocol.h"
@@ -457,10 +458,11 @@ int main(void)
 	if (lp_core_mailbox_init(&mailbox, NULL) != ESP_OK)
 		for (;;)
 			;
-	/* Give HP time to reopen the HP-only clock gate reset by mailbox_init. */
-	for (volatile uint32_t delay = 0; delay < 100000U; delay++)
-		__asm__ volatile ("nop");
-
+	/* S31 TRM ch.11 LP Mailbox: MB_REG_CLK_EN gates register access.
+	 * ESP-IDF lp_core_mailbox_impl_init() resets it after enabling it.
+	 */
+	lp_mailbox_ll_enable_clock(&LP_MAILBOX);
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
 	S31_LP_SYS_STORE0 = S31_LP_STAGE_MAILBOX_READY;
 	S31_LP_SYS_STORE0 = S31_LP_STAGE_READY_SEND;
 	(void)lp_core_mailbox_send(mailbox, S31_LP_MSG_READY, -1);

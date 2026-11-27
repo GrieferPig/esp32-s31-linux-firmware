@@ -7,6 +7,10 @@
 #include "esp_eap_client.h"
 #include "../../linux-esp32-s31/include/linux/esp32s31-radio-control.h"
 #include "esp_bt.h"
+#include "esp_crypto_lock.h"
+#include "esp_crypto_periph_clk.h"
+#include "hal/ecdsa_hal.h"
+#include "hal/sec_ll.h"
 #include "esp_event.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
@@ -1007,12 +1011,61 @@ static int __attribute__((noinline)) s31_wifi_ap_start_control(
 	return rc;
 }
 
+static int s31_radio_security_control_task(struct s31_wifi_control *request)
+{
+	const struct s31_radio_ecdsa_request *ecdsa = (const void *)request->data;
+	unsigned int size = request->length;
+	ecdsa_hal_config_t config = {
+		.mode = ECDSA_MODE_SIGN_VERIFY,
+		.curve = size == 48 ? ECDSA_CURVE_SECP384R1 : ECDSA_CURVE_SECP256R1,
+		.sha_mode = ECDSA_Z_USER_PROVIDED,
+	};
+	int rc;
+
+	if (request->operation == S31_RADIO_SECURITY_CAP) {
+		request->field = S31_RADIO_SECURITY_ABI;
+		return ESP_OK;
+	}
+	if (request->operation != S31_RADIO_ECDSA_VERIFY || (size != 32 && size != 48))
+		return ESP_ERR_INVALID_ARG;
+
+	/*
+	 * S31 TRM ch.19 ECDSA: the operation owns ECC until IDLE.
+	 * Use the IDF crypto owner as in esp_ecdsa_acquire_hardware() so
+	 * Wi-Fi/WPA3 and Bluetooth never overlap the same ECC engine.
+	 */
+	esp_crypto_ecdsa_lock_acquire();
+	esp_crypto_ecdsa_enable_periph_clk(true);
+	esp_crypto_ecc_enable_periph_clk(true);
+	esp_crypto_key_mgr_enable_periph_clk(true);
+
+	/*
+	 * IDF ecdsa_hal_verify_signature() follows the PREP, LOAD, PROC and
+	 * POST transitions in ch.19.5, including the hardware result at IDLE.
+	 */
+	rc = ecdsa_hal_verify_signature(&config, ecdsa->digest, ecdsa->r,
+				       ecdsa->s, ecdsa->x, ecdsa->y, size);
+	request->field = rc == 0;
+
+	esp_crypto_ecdsa_enable_periph_clk(false);
+	esp_crypto_ecc_enable_periph_clk(false);
+	esp_crypto_key_mgr_enable_periph_clk(false);
+	esp_crypto_ecdsa_lock_release();
+	return ESP_OK;
+}
+
 void s31_radio_wifi_control_task(void *arg)
 {
-	const struct s31_wifi_control *request = arg;
-	int rc = s31_wifi_prepare();
+	struct s31_wifi_control *request = arg;
 	unsigned int i;
+	int rc;
 
+	if (request->operation == S31_RADIO_SECURITY_CAP ||
+	    request->operation == S31_RADIO_ECDSA_VERIFY) {
+		rc = s31_radio_security_control_task(request);
+		goto done;
+	}
+	rc = s31_wifi_prepare();
 	if (rc)
 		goto done;
 	switch (request->operation) {
@@ -1170,6 +1223,12 @@ void s31_radio_stack_task(void *arg)
 	 * out of the ROM UART busy-poll path. */
 	esp_log_set_vprintf(s31_radio_log_vprintf);
 	esp_log_level_set("*", ESP_LOG_WARN);
+	/*
+	 * S31 TRM ch.19.5.2: the ECDSA functional clock is derived from
+	 * CRYPTO_CLK_SRC_SEL. This payload does not run IDF's esp_security_init().
+	 * Set the same source as the ESP32-S31 esp_crypto_clk_init().
+	 */
+	sec_ll_crypto_clk_src_sel(SOC_MOD_CLK_PLL_F240M);
 	/* Keep the explicit native-IDF coexistence baseline.  The larger Linux
 	 * direct-netdev values (32 static + 48 dynamic) reserve roughly 80 KiB of
 	 * radio heap/DMA state, but did not eliminate the Type-2 LMAC stalls during

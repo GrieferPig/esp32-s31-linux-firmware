@@ -4,6 +4,7 @@
 RADIO_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 RADIO_SRC := $(patsubst %/,%,$(dir $(RADIO_MAKEFILE)))
 PROJECT_DIR := $(abspath $(RADIO_SRC)/../..)
+S31_KERNEL_DIR ?= $(PROJECT_DIR)/linux-esp32-s31
 include $(PROJECT_DIR)/configs/build-versions.mk
 
 O ?= $(PROJECT_DIR)/out/radio
@@ -218,14 +219,17 @@ ESP_CFLAGS  := -Os -mabi=ilp32f -march=$(RADIO_ISA) \
 		-I$(IDF_PATH)/components/bt/porting_btdm/transport/include \
 		-I$(IDF_PATH)/components/esp_hal_timg/include \
 		-I$(IDF_PATH)/components/esp_hal_timg/esp32s31/include \
+		-I$(IDF_PATH)/components/esp_security/include \
+		-I$(IDF_PATH)/components/esp_hal_security/include \
+		-I$(IDF_PATH)/components/esp_hal_security/esp32s31/include \
 		$(IDF_CAPTURED_INCLUDES)
 # radio_stack.c expands BT_CONTROLLER_INIT_CONFIG_DEFAULT(), so its object must
 # be rebuilt whenever the IDF configuration changes.  Without this dependency,
 # btdm_lp.c could be rebuilt with controller sleep enabled while this object
 # retained sleep_en=0, leaving the closed controller's sleep environment NULL.
-radio_stack.linux.o: $(addprefix $(RADIO_SRC)/,radio_stack.c s31_wifi_rom_runtime.inc s31_softmac.inc s31_softmac_coex_pm.inc s31_softmac_tx_agg.inc s31_softmac_tx_reports.inc s31_rtos/s31_rtos.h) $(PROJECT_DIR)/linux-esp32-s31/include/linux/esp32s31-radio-control.h $(RADIO_MAKEFILE) $(RADIO_SDKCONFIG)
+radio_stack.linux.o: $(addprefix $(RADIO_SRC)/,radio_stack.c s31_wifi_rom_runtime.inc s31_softmac.inc s31_softmac_coex_pm.inc s31_softmac_tx_agg.inc s31_softmac_tx_reports.inc s31_rtos/s31_rtos.h) $(S31_KERNEL_DIR)/include/linux/esp32s31-radio-control.h $(RADIO_MAKEFILE) $(RADIO_SDKCONFIG)
 	$(ESP_CC) $(ESP_CFLAGS) -MMD -MP $(RADIO_STACK_DEFS) \
-		-I $(RADIO_SRC)/s31_rtos -c $< -o $@
+		-I $(RADIO_SRC)/s31_rtos -idirafter $(S31_KERNEL_DIR)/include -c $< -o $@
 
 s31_vhci.o: $(RADIO_SRC)/s31_vhci.c $(RADIO_SRC)/s31_vhci_command.inc $(RADIO_SRC)/s31_vhci_acl.inc $(RADIO_SRC)/s31_vhci_bredr.inc $(IDF_PATH)/components/bt/porting_btdm/transport/driver/vhci/hci_driver_standard.c $(RADIO_SDKCONFIG)
 	$(ESP_CC) $(ESP_CFLAGS) -MMD -MP \

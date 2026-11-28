@@ -7,16 +7,17 @@
 #include "esp_eap_client.h"
 #include <linux/esp32s31-radio-control.h>
 #include "esp_bt.h"
+#include "esp_event.h"
 #include "esp_crypto_lock.h"
 #include "esp_ds.h"
 #include "esp_efuse.h"
 #include "esp_crypto_periph_clk.h"
 #include "hal/ecdsa_hal.h"
 #include "hal/sec_ll.h"
-#include "esp_event.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
 #include "esp_ipc.h"
+#include "esp_ieee802154.h"
 #include "esp_phy_init.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -1117,6 +1118,8 @@ static int s31_radio_security_control_task(struct s31_wifi_control *request)
 	return ESP_OK;
 }
 
+#include "s31_wpan.inc"
+
 void s31_radio_wifi_control_task(void *arg)
 {
 	struct s31_wifi_control *request = arg;
@@ -1126,6 +1129,11 @@ void s31_radio_wifi_control_task(void *arg)
 	if (request->operation >= S31_RADIO_SECURITY_CAP &&
 	    request->operation <= S31_RADIO_DS_SIGN) {
 		rc = s31_radio_security_control_task(request);
+		goto done;
+	}
+	if (request->operation >= S31_RADIO_WPAN_CAP &&
+	    request->operation <= S31_RADIO_WPAN_ED) {
+		rc = s31_radio_wpan_control_task(request);
 		goto done;
 	}
 	rc = s31_wifi_prepare();

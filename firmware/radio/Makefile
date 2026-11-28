@@ -228,6 +228,7 @@ ESP_CFLAGS  := -Os -mabi=ilp32f -march=$(RADIO_ISA) \
 		-I$(IDF_PATH)/components/esp_hal_timg/include \
 		-I$(IDF_PATH)/components/esp_hal_timg/esp32s31/include \
 		-I$(IDF_PATH)/components/esp_security/include \
+		-I$(IDF_PATH)/components/ieee802154/include \
 		-I$(IDF_PATH)/components/esp_hal_security/include \
 		-I$(IDF_PATH)/components/esp_hal_security/esp32s31/include \
 		$(IDF_CAPTURED_INCLUDES)
@@ -235,7 +236,7 @@ ESP_CFLAGS  := -Os -mabi=ilp32f -march=$(RADIO_ISA) \
 # be rebuilt whenever the IDF configuration changes.  Without this dependency,
 # btdm_lp.c could be rebuilt with controller sleep enabled while this object
 # retained sleep_en=0, leaving the closed controller's sleep environment NULL.
-radio_stack.linux.o: $(addprefix $(RADIO_SRC)/,radio_stack.c s31_wifi_rom_runtime.inc s31_softmac.inc s31_softmac_coex_pm.inc s31_softmac_tx_agg.inc s31_softmac_tx_reports.inc s31_rtos/s31_rtos.h) $(S31_KERNEL_DIR)/include/linux/esp32s31-radio-control.h $(RADIO_MAKEFILE) $(RADIO_SDKCONFIG)
+radio_stack.linux.o: $(addprefix $(RADIO_SRC)/,radio_stack.c s31_wpan.inc s31_wifi_rom_runtime.inc s31_softmac.inc s31_softmac_coex_pm.inc s31_softmac_tx_agg.inc s31_softmac_tx_reports.inc s31_rtos/s31_rtos.h) $(S31_KERNEL_DIR)/include/linux/esp32s31-radio-control.h $(RADIO_MAKEFILE) $(RADIO_SDKCONFIG)
 	$(ESP_CC) $(ESP_CFLAGS) -MMD -MP $(RADIO_STACK_DEFS) \
 		-I $(RADIO_SRC)/s31_rtos -idirafter $(S31_KERNEL_DIR)/include -c $< -o $@
 

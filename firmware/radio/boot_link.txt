@@ -36,6 +36,8 @@ esp-idf/esp_psram/libesp_psram.a
 esp-idf/protobuf-c/libprotobuf-c.a
 esp-idf/esp_event/libesp_event.a
 esp-idf/nvs_flash/libnvs_flash.a
+esp-idf/ieee802154/libieee802154.a
+esp-idf/esp_hal_ieee802154/libesp_hal_ieee802154.a
 esp-idf/esp_phy/libesp_phy.a
 esp-idf/lwip/liblwip.a
 esp-idf/esp_netif/libesp_netif.a
@@ -50,6 +52,8 @@ esp-idf/http_parser/libhttp_parser.a
 esp-idf/protocomm/libprotocomm.a
 esp-idf/protocomm/libprotocomm.a
 esp-idf/protobuf-c/libprotobuf-c.a
+esp-idf/ieee802154/libieee802154.a
+esp-idf/esp_hal_ieee802154/libesp_hal_ieee802154.a
 esp-idf/esp_phy/libesp_phy.a
 esp-idf/esp_coex/libesp_coex.a
 esp-idf/bt/libbt.a
@@ -68,6 +72,8 @@ esp-idf/wpa_supplicant/libwpa_supplicant.a
 @IDF_PATH@/components/esp_wifi/lib/esp32s31/libpp.a
 @IDF_PATH@/components/esp_wifi/lib/esp32s31/libsmartconfig.a
 @IDF_PATH@/components/esp_wifi/lib/esp32s31/libwapi.a
+esp-idf/ieee802154/libieee802154.a
+esp-idf/esp_hal_ieee802154/libesp_hal_ieee802154.a
 esp-idf/esp_phy/libesp_phy.a
 esp-idf/esp_coex/libesp_coex.a
 esp-idf/bt/libbt.a
@@ -86,6 +92,8 @@ esp-idf/wpa_supplicant/libwpa_supplicant.a
 @IDF_PATH@/components/esp_wifi/lib/esp32s31/libpp.a
 @IDF_PATH@/components/esp_wifi/lib/esp32s31/libsmartconfig.a
 @IDF_PATH@/components/esp_wifi/lib/esp32s31/libwapi.a
+esp-idf/ieee802154/libieee802154.a
+esp-idf/esp_hal_ieee802154/libesp_hal_ieee802154.a
 esp-idf/esp_phy/libesp_phy.a
 esp-idf/esp_coex/libesp_coex.a
 esp-idf/bt/libbt.a

@@ -8,9 +8,14 @@
 #include "ulp_lp_core_lp_timer_shared.h"
 #include "ulp_lp_core_utils.h"
 #include "hal/clk_tree_ll.h"
+#include "hal/lp_mailbox_ll.h"
 #include "hal/rtc_timer_ll.h"
 
 #include "../../../../shared/s31_lp_protocol.h"
+#include "s31_lp_i2c.h"
+#include "s31_lp_spi.h"
+#include "s31_lp_uart.h"
+#include "s31_lp_gdma.h"
 
 #define S31_LP_SYS_STORE0 (*(volatile uint32_t *)0x2070002cU)
 #define S31_LP_SYS_STORE3 (*(volatile uint32_t *)0x20700038U)
@@ -26,6 +31,82 @@ static uint32_t gpio_armed_mask;
 static uint64_t sleep_timer_target;
 static volatile struct s31_lp_sleep_control * const sleep_control =
 	(volatile struct s31_lp_sleep_control *)S31_LP_SLEEP_CONTROL_ADDR;
+
+static volatile struct s31_lp_rpc_ring * const peripheral_ring =
+	(volatile struct s31_lp_rpc_ring *)S31_LP_RPC_ADDR;
+
+_Static_assert(sizeof(struct s31_lp_rpc_ring) <= S31_LP_RPC_BYTES, "LP RPC ring size");
+_Static_assert(S31_LP_SLEEP_CONTROL_ADDR + sizeof(struct s31_lp_sleep_control) <=
+	       S31_LP_RPC_ADDR, "LP RPC overlaps sleep control");
+
+static void peripheral_rpc_init(void)
+{
+	peripheral_ring->producer = 0;
+	peripheral_ring->consumer = 0;
+	peripheral_ring->version = S31_LP_RPC_VERSION;
+	peripheral_ring->magic = S31_LP_RPC_MAGIC;
+}
+
+static uint32_t peripheral_rpc(uint32_t sequence)
+{
+	volatile struct s31_lp_rpc_slot *slot;
+	uint32_t consumer, producer;
+	uint32_t result = S31_LP_RPC_UNSUPPORTED;
+	uint32_t output_len = 0;
+
+	/*
+	 * TRM ch.11 LP Mailbox: lp_core_mailbox_receive() reads the message
+	 * and acknowledges its slot. Order the following SRAM reads after it.
+	 */
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	consumer = peripheral_ring->consumer;
+	producer = peripheral_ring->producer;
+	slot = &peripheral_ring->slots[consumer % S31_LP_RPC_SLOTS];
+	if (producer - consumer != 1 || slot->generation != producer ||
+	    slot->sequence != sequence)
+		return S31_LP_RSP_ERROR | sequence;
+
+	if (slot->input_len > sizeof(slot->data) || slot->output_len > sizeof(slot->data)) {
+		result = S31_LP_RPC_INVALID;
+	} else if (slot->operation == S31_LP_RPC_CAPABILITIES) {
+		result = slot->input_len || slot->output_len ? S31_LP_RPC_INVALID : S31_LP_RPC_OK;
+		slot->args[0] = S31_LP_SERVICE_I2C | S31_LP_SERVICE_SPI |
+				S31_LP_SERVICE_UART | S31_LP_SERVICE_GDMA;
+	} else if (slot->operation == S31_LP_RPC_I2C_XFER ||
+		   slot->operation == S31_LP_RPC_SPI ||
+		   slot->operation == S31_LP_RPC_UART ||
+		   slot->operation == S31_LP_RPC_GDMA) {
+		uint32_t state = sleep_control->state;
+		bool release_spi = slot->operation == S31_LP_RPC_SPI &&
+				   slot->args[3] == S31_LP_SPI_RELEASE;
+		bool stop_uart = slot->operation == S31_LP_RPC_UART &&
+				 slot->args[0] == S31_LP_UART_STOP;
+		bool gdma_info = slot->operation == S31_LP_RPC_GDMA &&
+				 slot->args[0] == S31_LP_GDMA_INFO;
+
+		if (!release_spi && !stop_uart && !gdma_info &&
+		    (state == S31_LP_SLEEP_PREPARED || state == S31_LP_SLEEP_ARMED ||
+		     state == S31_LP_SLEEP_HP_ASLEEP || state == S31_LP_SLEEP_WAKING)) {
+			result = S31_LP_RPC_BUSY;
+		} else if (slot->operation == S31_LP_RPC_I2C_XFER) {
+			result = s31_lp_i2c_transfer(slot, s31_lp_spi_pins() | s31_lp_uart_pins());
+		} else if (slot->operation == S31_LP_RPC_SPI) {
+			result = s31_lp_spi_transfer(slot, s31_lp_i2c_pins() | s31_lp_uart_pins());
+		} else if (slot->operation == S31_LP_RPC_UART) {
+			result = s31_lp_uart_rpc(slot, s31_lp_i2c_pins() | s31_lp_spi_pins());
+		} else {
+			result = s31_lp_gdma_rpc(slot);
+		}
+		if (result == S31_LP_RPC_OK)
+			output_len = slot->output_len;
+	}
+	slot->output_len = output_len;
+	slot->result = result;
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	peripheral_ring->consumer = producer;
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	return S31_LP_RSP_PERIPHERAL_RPC | sequence;
+}
 
 static void write_u64(volatile uint32_t *lo, volatile uint32_t *hi,
 		      uint64_t value)
@@ -66,7 +147,8 @@ static void sleep_control_set_result(uint32_t state, uint32_t result)
 				      S31_LP_CAP_TIMER_WAKE |
 				      S31_LP_CAP_GPIO_WAKE |
 				      S31_LP_CAP_WAKE_LOG |
-				      S31_LP_CAP_RETENTION_DESC;
+				      S31_LP_CAP_RETENTION_DESC |
+				      S31_LP_CAP_PERIPHERAL_RPC;
 	sleep_control->state = state;
 	sleep_control->result = result;
 	sleep_control_update_crc();
@@ -225,6 +307,11 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 	case S31_LP_CMD_SLEEP_PREPARE:
 		if (!sleep_control_request_valid(sequence))
 			return S31_LP_RSP_ERROR | sequence;
+		if (s31_lp_uart_pins()) {
+			sleep_control_set_result(S31_LP_SLEEP_REJECTED,
+						 S31_LP_SLEEP_ERR_STATE);
+			return S31_LP_RSP_ERROR | sequence;
+		}
 		if (sleep_control->wake_mask &
 		    ~(S31_LP_WAKE_TIMER | S31_LP_WAKE_GPIO |
 		      S31_LP_WAKE_LP_UART)) {
@@ -241,6 +328,8 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 		if (sleep_control->wake_mask & S31_LP_WAKE_GPIO) {
 			if (!sleep_control->gpio_mask_lo ||
 			    (sleep_control->gpio_mask_lo & ~0xffU) ||
+			    (sleep_control->gpio_mask_lo & (s31_lp_i2c_pins() |
+							   s31_lp_spi_pins())) ||
 			    sleep_control->gpio_mask_hi ||
 			    sleep_control->gpio_level_hi ||
 			    (sleep_control->gpio_level_lo &
@@ -289,6 +378,7 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 						 S31_LP_SLEEP_ERR_UNSUPPORTED);
 			return S31_LP_RSP_ERROR | sequence;
 		}
+		s31_lp_spi_release();
 		sleep_control_set_result(S31_LP_SLEEP_PREPARED,
 					 S31_LP_SLEEP_OK);
 		return S31_LP_RSP_SLEEP_PREPARED | sequence;
@@ -453,14 +543,16 @@ int main(void)
 	ulp_lp_core_intr_enable();
 	ulp_lp_core_lp_timer_intr_enable(false);
 	ulp_lp_core_lp_timer_disable();
+	peripheral_rpc_init();
 	sleep_control_init();
 	if (lp_core_mailbox_init(&mailbox, NULL) != ESP_OK)
 		for (;;)
 			;
-	/* Give HP time to reopen the HP-only clock gate reset by mailbox_init. */
-	for (volatile uint32_t delay = 0; delay < 100000U; delay++)
-		__asm__ volatile ("nop");
-
+	/* S31 TRM ch.11 LP Mailbox: MB_REG_CLK_EN gates register access.
+	 * ESP-IDF lp_core_mailbox_impl_init() resets it after enabling it.
+	 */
+	lp_mailbox_ll_enable_clock(&LP_MAILBOX);
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
 	S31_LP_SYS_STORE0 = S31_LP_STAGE_MAILBOX_READY;
 	S31_LP_SYS_STORE0 = S31_LP_STAGE_READY_SEND;
 	(void)lp_core_mailbox_send(mailbox, S31_LP_MSG_READY, -1);
@@ -490,6 +582,9 @@ int main(void)
 			continue;
 		}
 
+		if (s31_lp_uart_poll())
+			(void)lp_core_mailbox_send(mailbox, S31_LP_MSG_UART_EVENT, -1);
+
 		if (lp_core_mailbox_receive(mailbox, &message, 0) != ESP_OK) {
 			gpio_wake_poll();
 			continue;
@@ -504,6 +599,9 @@ int main(void)
 			break;
 		case S31_LP_CMD_STATUS:
 			response = S31_LP_RSP_STATUS | S31_LP_ABI_VERSION;
+			break;
+		case S31_LP_CMD_PERIPHERAL_RPC:
+			response = peripheral_rpc(sequence);
 			break;
 		case S31_LP_CMD_SLEEP_PREPARE:
 		case S31_LP_CMD_SLEEP_ARM:

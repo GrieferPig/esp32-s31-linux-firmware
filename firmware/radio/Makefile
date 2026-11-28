@@ -4,6 +4,7 @@
 RADIO_MAKEFILE := $(abspath $(lastword $(MAKEFILE_LIST)))
 RADIO_SRC := $(patsubst %/,%,$(dir $(RADIO_MAKEFILE)))
 PROJECT_DIR := $(abspath $(RADIO_SRC)/../..)
+S31_KERNEL_DIR ?= $(PROJECT_DIR)/linux-esp32-s31
 include $(PROJECT_DIR)/configs/build-versions.mk
 
 O ?= $(PROJECT_DIR)/out/radio
@@ -52,7 +53,9 @@ IDF_PP := $(IDF_PATH)/components/esp_wifi/lib/esp32s31/libpp.a
 # Resolve one ordered archive set for both the linker and dependency graph.
 # radio-idf-deps must finish before entering this component Makefile.
 RADIO_ARCHIVES := $(shell python3 $(PROJECT_DIR)/tools/build/radio_archives.py $(RADIO_SRC)/boot_link.txt "$(IDF_PATH)" "$(RADIO_BUILD_ABS)")
-LINUX_NOFREERTOS_LINK := $(subst $(IDF_NET80211),$(LINUX_NET80211),$(RADIO_ARCHIVES))
+IDF_SECURITY := $(RADIO_BUILD_ABS)/esp-idf/esp_security/libesp_security.a
+LINUX_SECURITY := libesp_security.s31-linux.a
+LINUX_NOFREERTOS_LINK := $(subst $(IDF_SECURITY),$(LINUX_SECURITY),$(subst $(IDF_NET80211),$(LINUX_NET80211),$(RADIO_ARCHIVES)))
 
 HEAP_WRAP_APIS := heap_caps_malloc heap_caps_free heap_caps_calloc \
 	heap_caps_realloc heap_caps_aligned_alloc heap_caps_aligned_calloc \
@@ -116,10 +119,16 @@ linux-radio-linked-imports.txt: $(LINUX_RADIO_LINKED_IMPORTS)
 $(LINUX_NET80211): $(IDF_NET80211)
 	cp $< $@
 
+# Expose the IDF lock identity to the S31 libc bridge. SHA, HMAC and DS
+# can acquire this lock from inside the same archive object.
+$(LINUX_SECURITY): $(IDF_SECURITY) $(RADIO_MAKEFILE)
+	$(ESP_TOOLS)/bin/riscv32-esp-elf-objcopy --globalize-symbol=s_crypto_sha_aes_lock $< $@
+
 linux_radio.raw.o: radio_stack.linux.o s31_pp_submit.o s31_vhci.o s31_vhci_pool_wake.o nofreertos_link.txt $(RADIO_SRC)/boot_flags.txt $(RADIO_SRC)/boot_linkpath.txt $(LINUX_NET80211) $(S31RTOS_LINUX_OBJS) $(RADIO_COEX_PRINTF_OBJ) $(RADIO_MAKEFILE) $(PROJECT_DIR)/tools/build/radio_tls.py $(RADIO_SRC)/prepare_xip_sections.py
 	$(ESP_CC) -nostdlib -r -Wl,--gc-sections -Wl,--unique=.iram1* -Wl,--unique=.wifi*iram* $(HEAP_WRAP_FLAGS) $(LINUX_WRAP_FLAGS) \
 		-Wl,--undefined=s31_radio_stack_task \
 		-Wl,--undefined=s31_radio_wifi_control_task \
+		-Wl,--undefined=s31_radio_sha256_compress \
 		-Wl,--undefined=s31_radio_wifi_try_send_interface \
 		-Wl,--undefined=s31_radio_wifi_scan_task \
 		-Wl,--undefined=s31_radio_wifi_connect_task \
@@ -166,7 +175,7 @@ linux-radio-undefined.txt: linux_radio.resolved.o
 
 linux-radio-localize.txt: linux_radio.resolved.o $(RADIO_MAKEFILE)
 	$(ESP_TOOLS)/bin/riscv32-esp-elf-nm -g --defined-only $< | \
-		awk '{ n=$$NF; if (n !~ /^(s31_radio_fw_abi_version|s31_radio_(stack|shutdown|bt_(enable|disable)|wifi_(scan|connect|disconnect|control))_task|s31_radio_wifi_(read_mac|clock_enable|clock_disable)|s31_radio_(vhci|wifi)_try_send|s31_radio_wifi_try_send_interface|s31_radio_coex_status|s31_rtos_(init|tick|hard_tick|free|task_release|isr_depth)|s31_linux_timer_next_deadline_ns|xTaskCreatePinnedToCore)$$/) print n; }' | \
+		awk '{ n=$$NF; if (n !~ /^(s31_radio_fw_abi_version|s31_radio_(stack|shutdown|bt_(enable|disable)|wifi_(scan|connect|disconnect|control))_task|s31_radio_wifi_(read_mac|clock_enable|clock_disable)|s31_radio_(vhci|wifi)_try_send|s31_radio_wifi_try_send_interface|s31_radio_coex_status|s31_rtos_(init|tick|hard_tick|free|task_release|isr_depth)|s31_linux_timer_next_deadline_ns|xTaskCreatePinnedToCore|s31_radio_sha256_compress)$$/) print n; }' | \
 		sort -u > $@
 
 linux_radio.localized.o: linux_radio.resolved.o linux-radio-localize.txt
@@ -218,14 +227,17 @@ ESP_CFLAGS  := -Os -mabi=ilp32f -march=$(RADIO_ISA) \
 		-I$(IDF_PATH)/components/bt/porting_btdm/transport/include \
 		-I$(IDF_PATH)/components/esp_hal_timg/include \
 		-I$(IDF_PATH)/components/esp_hal_timg/esp32s31/include \
+		-I$(IDF_PATH)/components/esp_security/include \
+		-I$(IDF_PATH)/components/esp_hal_security/include \
+		-I$(IDF_PATH)/components/esp_hal_security/esp32s31/include \
 		$(IDF_CAPTURED_INCLUDES)
 # radio_stack.c expands BT_CONTROLLER_INIT_CONFIG_DEFAULT(), so its object must
 # be rebuilt whenever the IDF configuration changes.  Without this dependency,
 # btdm_lp.c could be rebuilt with controller sleep enabled while this object
 # retained sleep_en=0, leaving the closed controller's sleep environment NULL.
-radio_stack.linux.o: $(addprefix $(RADIO_SRC)/,radio_stack.c s31_wifi_rom_runtime.inc s31_softmac.inc s31_softmac_coex_pm.inc s31_softmac_tx_agg.inc s31_softmac_tx_reports.inc s31_rtos/s31_rtos.h) $(PROJECT_DIR)/linux-esp32-s31/include/linux/esp32s31-radio-control.h $(RADIO_MAKEFILE) $(RADIO_SDKCONFIG)
+radio_stack.linux.o: $(addprefix $(RADIO_SRC)/,radio_stack.c s31_wifi_rom_runtime.inc s31_softmac.inc s31_softmac_coex_pm.inc s31_softmac_tx_agg.inc s31_softmac_tx_reports.inc s31_rtos/s31_rtos.h) $(S31_KERNEL_DIR)/include/linux/esp32s31-radio-control.h $(RADIO_MAKEFILE) $(RADIO_SDKCONFIG)
 	$(ESP_CC) $(ESP_CFLAGS) -MMD -MP $(RADIO_STACK_DEFS) \
-		-I $(RADIO_SRC)/s31_rtos -c $< -o $@
+		-I $(RADIO_SRC)/s31_rtos -idirafter $(S31_KERNEL_DIR)/include -c $< -o $@
 
 s31_vhci.o: $(RADIO_SRC)/s31_vhci.c $(RADIO_SRC)/s31_vhci_command.inc $(RADIO_SRC)/s31_vhci_acl.inc $(RADIO_SRC)/s31_vhci_bredr.inc $(IDF_PATH)/components/bt/porting_btdm/transport/driver/vhci/hci_driver_standard.c $(RADIO_SDKCONFIG)
 	$(ESP_CC) $(ESP_CFLAGS) -MMD -MP \
@@ -269,7 +281,7 @@ linux_radio.raw.o: $(LINUX_NOFREERTOS_LINK) .s31-build-config \
 clean:
 	rm -f *.o *.d s31_rtos/*.o s31_rtos/*.d .s31-build-config \
 		linux-radio-undefined.txt linux-radio-localize.txt linux-radio-linked-imports.txt \
-		nofreertos_link.txt undefined.txt $(LINUX_NET80211) \
+		nofreertos_link.txt undefined.txt $(LINUX_NET80211) $(LINUX_SECURITY) \
 		.s31-net80211/ieee80211_api.o
 
 endif # CURDIR == RADIO_OUT

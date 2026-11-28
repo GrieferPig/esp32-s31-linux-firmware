@@ -5,9 +5,11 @@
 #include <string.h>
 #include <time.h>
 #include "esp_eap_client.h"
-#include "../../linux-esp32-s31/include/linux/esp32s31-radio-control.h"
+#include <linux/esp32s31-radio-control.h>
 #include "esp_bt.h"
 #include "esp_crypto_lock.h"
+#include "esp_ds.h"
+#include "esp_efuse.h"
 #include "esp_crypto_periph_clk.h"
 #include "hal/ecdsa_hal.h"
 #include "hal/sec_ll.h"
@@ -1011,6 +1013,61 @@ static int __attribute__((noinline)) s31_wifi_ap_start_control(
 	return rc;
 }
 
+static int s31_radio_ds_sign(struct s31_wifi_control *request)
+{
+	struct s31_radio_ds_payload *payload = (void *)(uintptr_t)request->offset;
+	esp_efuse_purpose_t purpose;
+	esp_ds_data_t key;
+	int rc;
+
+	_Static_assert(sizeof(key) == sizeof(payload->key), "S31 DS blob size");
+	_Static_assert(sizeof(payload->message) == ESP_DS_SIGNATURE_MAX_BIT_LEN / 8,
+		       "S31 DS message size");
+	_Static_assert(S31_RADIO_DS_SLOTS == EFUSE_BLK_KEY_MAX - EFUSE_BLK_KEY0,
+		       "S31 DS eFuse slots");
+
+	if (!payload || request->total >= S31_RADIO_DS_SLOTS)
+		return ESP_ERR_INVALID_ARG;
+	memcpy(&key, payload->key, sizeof(key));
+	if ((key.rsa_length != ESP_DS_RSA_1024 && key.rsa_length != ESP_DS_RSA_2048 &&
+	     key.rsa_length != ESP_DS_RSA_3072 && key.rsa_length != ESP_DS_RSA_4096) ||
+	    request->length != (key.rsa_length + 1U) * 4)
+		return ESP_ERR_INVALID_ARG;
+
+	/*
+	 * S31 TRM ch.18.4: DS reads the HMAC downstream key and owns the
+	 * AES, SHA and RSA engines. esp_ds_sign() claims these same engines
+	 * via the IDF locks used by the radio's cryptographic clients.
+	 */
+	purpose = esp_efuse_get_key_purpose(EFUSE_BLK_KEY0 + request->total);
+	if (purpose != ESP_EFUSE_KEY_PURPOSE_HMAC_DOWN_DIGITAL_SIGNATURE &&
+	    purpose != ESP_EFUSE_KEY_PURPOSE_HMAC_DOWN_ALL) {
+		request->field = S31_RADIO_DS_NO_KEY;
+		return ESP_OK;
+	}
+
+	rc = esp_ds_sign(payload->message, &key, request->total, payload->signature);
+	switch (rc) {
+	case ESP_OK:
+		request->field = S31_RADIO_DS_OK;
+		break;
+	case ESP_ERR_HW_CRYPTO_DS_HMAC_FAIL:
+		request->field = S31_RADIO_DS_NO_KEY;
+		break;
+	case ESP_ERR_HW_CRYPTO_DS_INVALID_DIGEST:
+	case ESP_ERR_HW_CRYPTO_DS_INVALID_PADDING:
+		request->field = S31_RADIO_DS_BAD_BLOB;
+		break;
+	case ESP_ERR_NO_MEM:
+		request->field = S31_RADIO_DS_NO_MEMORY;
+		break;
+	default:
+		request->field = S31_RADIO_DS_IO_ERROR;
+		break;
+	}
+	return ESP_OK;
+}
+
 static int s31_radio_security_control_task(struct s31_wifi_control *request)
 {
 	const struct s31_radio_ecdsa_request *ecdsa = (const void *)request->data;
@@ -1026,6 +1083,12 @@ static int s31_radio_security_control_task(struct s31_wifi_control *request)
 		request->field = S31_RADIO_SECURITY_ABI;
 		return ESP_OK;
 	}
+	if (request->operation == S31_RADIO_DS_CAP) {
+		request->field = S31_RADIO_DS_ABI;
+		return ESP_OK;
+	}
+	if (request->operation == S31_RADIO_DS_SIGN)
+		return s31_radio_ds_sign(request);
 	if (request->operation != S31_RADIO_ECDSA_VERIFY || (size != 32 && size != 48))
 		return ESP_ERR_INVALID_ARG;
 
@@ -1060,8 +1123,8 @@ void s31_radio_wifi_control_task(void *arg)
 	unsigned int i;
 	int rc;
 
-	if (request->operation == S31_RADIO_SECURITY_CAP ||
-	    request->operation == S31_RADIO_ECDSA_VERIFY) {
+	if (request->operation >= S31_RADIO_SECURITY_CAP &&
+	    request->operation <= S31_RADIO_DS_SIGN) {
 		rc = s31_radio_security_control_task(request);
 		goto done;
 	}

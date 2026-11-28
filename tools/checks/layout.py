@@ -62,21 +62,41 @@ def check(root=ROOT):
         raise ValueError("UART DMA/high radio heap boundary differs")
     dtsdir = root / "linux-esp32-s31/arch/riscv/boot/dts/espressif"
     dts = (dtsdir / "esp32s31.dtsi").read_text()
-    for name in ("PSRAM", "AXI_DESC", "AHB_DESC", "USB_LOCAL"):
+    module_dts = (dtsdir / "esp32s31-wroom-3.dtsi").read_text()
+    # The PSRAM node is supplied by the S31 base DTS or module include.
+    # The common SoC DTSI only contains the peripheral address map.
+    memory = r"<0x0*%x\s+0x0*%x>" % (shared["S31_PSRAM_BASE"], shared["S31_PSRAM_SIZE"])
+    for name, text in (("esp32s31.dts", (dtsdir / "esp32s31.dts").read_text()),
+                       ("esp32s31-wroom-3.dtsi", module_dts)):
+        node = re.search(r"memory@50000000\s*\{([^}]*)\}", text)
+        if not node or not re.search(r"reg\s*=\s*" + memory, node[1], re.I):
+            raise ValueError(name + ": PSRAM memory node differs from the shared contract")
+    for name in ("AXI_DESC", "AHB_DESC", "USB_LOCAL"):
         pattern = r"<0x0*%x\s+0x0*%x>" % (shared["S31_" + name + "_BASE"], shared["S31_" + name + "_SIZE"])
         if not re.search(pattern, dts, re.I):
             raise ValueError(name + " missing or different in DTS reg")
+    uart_dma = r"<0x0*%x\s+0x0*%x>" % (shared["S31_UART_DMA_BASE"], shared["S31_UART_DMA_SIZE"])
+    base_dma = re.search(r"\buart_dma:\s+uart-dma@[0-9a-f]+\s*\{([^}]*)\}", dts)
+    if not base_dma or not re.search(uart_dma, base_dma[1], re.I):
+        raise ValueError("S31 UART DMA reservation differs in the common DTSI")
     for overlay in dtsdir.glob("esp32s31-overlay-uart*-dma.dtso"):
-        if not re.search(r"<0x0*%x\s+0x0*%x>" % (shared["S31_UART_DMA_BASE"], shared["S31_UART_DMA_SIZE"]), overlay.read_text(), re.I):
-            raise ValueError(str(overlay.name) + " UART DMA reservation differs")
+        text = overlay.read_text()
+        if re.search(uart_dma, text, re.I):
+            continue
+        # An overlay can use the common UHCI node through its phandle.
+        if re.search(r"espressif,uhci\s*=\s*<&uart_dma>\s*;", text):
+            override = re.search(r"&uart_dma\s*\{([^}]*)\}", text)
+            if not override or not re.search(r"\breg\s*=", override[1]):
+                continue
+        raise ValueError(str(overlay.name) + " UART DMA reservation differs")
     mappings = {"spl": "SPL", "u-boot-fit": "UBOOT_ITB", "dtb": "DTB", "radio-bundle": "RADIO", "linux": "KERNEL", "persist": "PERSIST", "rootfs": "ROOTFS"}
     for label, key in mappings.items():
-        match = re.search(r'label\s*=\s*"' + label + r'";\s*reg\s*=\s*<(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)>', dts)
+        match = re.search(r'label\s*=\s*"' + label + r'";\s*reg\s*=\s*<(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)>', module_dts)
         actual = tuple(int(x, 0) for x in match.groups()) if match else None
         expected = (slots["SLOT_" + key], sizes[key])
         if actual != expected:
             raise ValueError(f"DTS partition {label}: {actual} != slot map {expected}")
-    if "hil-scratch" in dts or not re.search(r"reg = <0x40000000 0x01000000>", dts):
+    if "hil-scratch" in module_dts or not re.search(r"reg = <0x40000000 0x01000000>", module_dts):
         raise ValueError("DTS must expose the full identity-mapped flash without HIL scratch")
     linker = (root / "linux-esp32-s31/arch/riscv/kernel/vmlinux-xip.lds.S").read_text()
     start = int(re.search(r"\.s31_radio.data\s+(0x[0-9a-fA-F]+)", linker)[1], 0)

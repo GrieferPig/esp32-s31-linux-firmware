@@ -13,6 +13,7 @@
 
 #include "../../../../shared/s31_lp_protocol.h"
 #include "s31_lp_i2c.h"
+#include "s31_lp_spi.h"
 
 #define S31_LP_SYS_STORE0 (*(volatile uint32_t *)0x2070002cU)
 #define S31_LP_SYS_STORE3 (*(volatile uint32_t *)0x20700038U)
@@ -67,18 +68,23 @@ static uint32_t peripheral_rpc(uint32_t sequence)
 		result = S31_LP_RPC_INVALID;
 	} else if (slot->operation == S31_LP_RPC_CAPABILITIES) {
 		result = slot->input_len || slot->output_len ? S31_LP_RPC_INVALID : S31_LP_RPC_OK;
-		slot->args[0] = S31_LP_SERVICE_I2C;
-	} else if (slot->operation == S31_LP_RPC_I2C_XFER) {
+		slot->args[0] = S31_LP_SERVICE_I2C | S31_LP_SERVICE_SPI;
+	} else if (slot->operation == S31_LP_RPC_I2C_XFER ||
+		   slot->operation == S31_LP_RPC_SPI) {
 		uint32_t state = sleep_control->state;
 
-		if (state == S31_LP_SLEEP_PREPARED || state == S31_LP_SLEEP_ARMED ||
-		    state == S31_LP_SLEEP_HP_ASLEEP || state == S31_LP_SLEEP_WAKING) {
+		if (slot->operation == S31_LP_RPC_SPI && slot->args[3] == S31_LP_SPI_RELEASE) {
+			result = s31_lp_spi_transfer(slot, s31_lp_i2c_pins());
+		} else if (state == S31_LP_SLEEP_PREPARED || state == S31_LP_SLEEP_ARMED ||
+			   state == S31_LP_SLEEP_HP_ASLEEP || state == S31_LP_SLEEP_WAKING) {
 			result = S31_LP_RPC_BUSY;
+		} else if (slot->operation == S31_LP_RPC_I2C_XFER) {
+			result = s31_lp_i2c_transfer(slot, s31_lp_spi_pins());
 		} else {
-			result = s31_lp_i2c_transfer(slot);
-			if (result == S31_LP_RPC_OK)
-				output_len = slot->output_len;
+			result = s31_lp_spi_transfer(slot, s31_lp_i2c_pins());
 		}
+		if (result == S31_LP_RPC_OK)
+			output_len = slot->output_len;
 	}
 	slot->output_len = output_len;
 	slot->result = result;
@@ -303,7 +309,8 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 		if (sleep_control->wake_mask & S31_LP_WAKE_GPIO) {
 			if (!sleep_control->gpio_mask_lo ||
 			    (sleep_control->gpio_mask_lo & ~0xffU) ||
-			    (sleep_control->gpio_mask_lo & s31_lp_i2c_pins()) ||
+			    (sleep_control->gpio_mask_lo & (s31_lp_i2c_pins() |
+							   s31_lp_spi_pins())) ||
 			    sleep_control->gpio_mask_hi ||
 			    sleep_control->gpio_level_hi ||
 			    (sleep_control->gpio_level_lo &
@@ -352,6 +359,7 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 						 S31_LP_SLEEP_ERR_UNSUPPORTED);
 			return S31_LP_RSP_ERROR | sequence;
 		}
+		s31_lp_spi_release();
 		sleep_control_set_result(S31_LP_SLEEP_PREPARED,
 					 S31_LP_SLEEP_OK);
 		return S31_LP_RSP_SLEEP_PREPARED | sequence;

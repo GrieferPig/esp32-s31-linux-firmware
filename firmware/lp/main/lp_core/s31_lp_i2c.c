@@ -140,7 +140,7 @@ static uint32_t wait_for_stop(uint32_t stop)
 	return result;
 }
 
-uint32_t s31_lp_i2c_transfer(volatile struct s31_lp_rpc_slot *slot)
+uint32_t s31_lp_i2c_transfer(volatile struct s31_lp_rpc_slot *slot, uint32_t owned)
 {
 	uint32_t addr = slot->args[0], pins = slot->args[1], hz = slot->args[2];
 	uint32_t sda = pins & 0xff, scl = pins >> 8;
@@ -155,6 +155,9 @@ uint32_t s31_lp_i2c_transfer(volatile struct s31_lp_rpc_slot *slot)
 	    (!written && !read) || read > sizeof(data) ||
 	    written > sizeof(data) - 1 - (read != 0))
 		return S31_LP_RPC_INVALID;
+
+	if (owned & ((1U << sda) | (1U << scl)))
+		return S31_LP_RPC_BUSY;
 
 	result = configure(pins, hz, flags);
 	if (result != S31_LP_RPC_OK)

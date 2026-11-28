@@ -28,6 +28,53 @@ static uint64_t sleep_timer_target;
 static volatile struct s31_lp_sleep_control * const sleep_control =
 	(volatile struct s31_lp_sleep_control *)S31_LP_SLEEP_CONTROL_ADDR;
 
+static volatile struct s31_lp_rpc_ring * const peripheral_ring =
+	(volatile struct s31_lp_rpc_ring *)S31_LP_RPC_ADDR;
+
+_Static_assert(sizeof(struct s31_lp_rpc_ring) <= S31_LP_RPC_BYTES, "LP RPC ring size");
+_Static_assert(S31_LP_SLEEP_CONTROL_ADDR + sizeof(struct s31_lp_sleep_control) <=
+	       S31_LP_RPC_ADDR, "LP RPC overlaps sleep control");
+
+static void peripheral_rpc_init(void)
+{
+	peripheral_ring->producer = 0;
+	peripheral_ring->consumer = 0;
+	peripheral_ring->version = S31_LP_RPC_VERSION;
+	peripheral_ring->magic = S31_LP_RPC_MAGIC;
+}
+
+static uint32_t peripheral_rpc(uint32_t sequence)
+{
+	volatile struct s31_lp_rpc_slot *slot;
+	uint32_t consumer, producer;
+	uint32_t result = S31_LP_RPC_UNSUPPORTED;
+
+	/*
+	 * TRM ch.11 LP Mailbox: lp_core_mailbox_receive() reads the message
+	 * and acknowledges its slot. Order the following SRAM reads after it.
+	 */
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	consumer = peripheral_ring->consumer;
+	producer = peripheral_ring->producer;
+	slot = &peripheral_ring->slots[consumer % S31_LP_RPC_SLOTS];
+	if (producer - consumer != 1 || slot->generation != producer ||
+	    slot->sequence != sequence)
+		return S31_LP_RSP_ERROR | sequence;
+
+	if (slot->input_len > sizeof(slot->data) || slot->output_len > sizeof(slot->data)) {
+		result = S31_LP_RPC_INVALID;
+	} else if (slot->operation == S31_LP_RPC_CAPABILITIES) {
+		result = slot->input_len || slot->output_len ? S31_LP_RPC_INVALID : S31_LP_RPC_OK;
+		slot->args[0] = 0;
+	}
+	slot->output_len = 0;
+	slot->result = result;
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	peripheral_ring->consumer = producer;
+	__asm__ volatile ("fence iorw, iorw" ::: "memory");
+	return S31_LP_RSP_PERIPHERAL_RPC | sequence;
+}
+
 static void write_u64(volatile uint32_t *lo, volatile uint32_t *hi,
 		      uint64_t value)
 {
@@ -67,7 +114,8 @@ static void sleep_control_set_result(uint32_t state, uint32_t result)
 				      S31_LP_CAP_TIMER_WAKE |
 				      S31_LP_CAP_GPIO_WAKE |
 				      S31_LP_CAP_WAKE_LOG |
-				      S31_LP_CAP_RETENTION_DESC;
+				      S31_LP_CAP_RETENTION_DESC |
+				      S31_LP_CAP_PERIPHERAL_RPC;
 	sleep_control->state = state;
 	sleep_control->result = result;
 	sleep_control_update_crc();
@@ -454,6 +502,7 @@ int main(void)
 	ulp_lp_core_intr_enable();
 	ulp_lp_core_lp_timer_intr_enable(false);
 	ulp_lp_core_lp_timer_disable();
+	peripheral_rpc_init();
 	sleep_control_init();
 	if (lp_core_mailbox_init(&mailbox, NULL) != ESP_OK)
 		for (;;)
@@ -506,6 +555,9 @@ int main(void)
 			break;
 		case S31_LP_CMD_STATUS:
 			response = S31_LP_RSP_STATUS | S31_LP_ABI_VERSION;
+			break;
+		case S31_LP_CMD_PERIPHERAL_RPC:
+			response = peripheral_rpc(sequence);
 			break;
 		case S31_LP_CMD_SLEEP_PREPARE:
 		case S31_LP_CMD_SLEEP_ARM:

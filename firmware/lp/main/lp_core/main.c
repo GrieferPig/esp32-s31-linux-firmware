@@ -15,6 +15,7 @@
 #include "s31_lp_i2c.h"
 #include "s31_lp_spi.h"
 #include "s31_lp_uart.h"
+#include "s31_lp_gdma.h"
 
 #define S31_LP_SYS_STORE0 (*(volatile uint32_t *)0x2070002cU)
 #define S31_LP_SYS_STORE3 (*(volatile uint32_t *)0x20700038U)
@@ -69,17 +70,21 @@ static uint32_t peripheral_rpc(uint32_t sequence)
 		result = S31_LP_RPC_INVALID;
 	} else if (slot->operation == S31_LP_RPC_CAPABILITIES) {
 		result = slot->input_len || slot->output_len ? S31_LP_RPC_INVALID : S31_LP_RPC_OK;
-		slot->args[0] = S31_LP_SERVICE_I2C | S31_LP_SERVICE_SPI | S31_LP_SERVICE_UART;
+		slot->args[0] = S31_LP_SERVICE_I2C | S31_LP_SERVICE_SPI |
+				S31_LP_SERVICE_UART | S31_LP_SERVICE_GDMA;
 	} else if (slot->operation == S31_LP_RPC_I2C_XFER ||
 		   slot->operation == S31_LP_RPC_SPI ||
-		   slot->operation == S31_LP_RPC_UART) {
+		   slot->operation == S31_LP_RPC_UART ||
+		   slot->operation == S31_LP_RPC_GDMA) {
 		uint32_t state = sleep_control->state;
 		bool release_spi = slot->operation == S31_LP_RPC_SPI &&
 				   slot->args[3] == S31_LP_SPI_RELEASE;
 		bool stop_uart = slot->operation == S31_LP_RPC_UART &&
 				 slot->args[0] == S31_LP_UART_STOP;
+		bool gdma_info = slot->operation == S31_LP_RPC_GDMA &&
+				 slot->args[0] == S31_LP_GDMA_INFO;
 
-		if (!release_spi && !stop_uart &&
+		if (!release_spi && !stop_uart && !gdma_info &&
 		    (state == S31_LP_SLEEP_PREPARED || state == S31_LP_SLEEP_ARMED ||
 		     state == S31_LP_SLEEP_HP_ASLEEP || state == S31_LP_SLEEP_WAKING)) {
 			result = S31_LP_RPC_BUSY;
@@ -89,6 +94,8 @@ static uint32_t peripheral_rpc(uint32_t sequence)
 			result = s31_lp_spi_transfer(slot, s31_lp_i2c_pins() | s31_lp_uart_pins());
 		} else if (slot->operation == S31_LP_RPC_UART) {
 			result = s31_lp_uart_rpc(slot, s31_lp_i2c_pins() | s31_lp_spi_pins());
+		} else {
+			result = s31_lp_gdma_rpc(slot);
 		}
 		if (result == S31_LP_RPC_OK)
 			output_len = slot->output_len;

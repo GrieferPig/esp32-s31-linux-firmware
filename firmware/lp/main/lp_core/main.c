@@ -29,6 +29,7 @@
 static lp_mailbox_t mailbox;
 static uint32_t gpio_armed_mask;
 static uint64_t sleep_timer_target;
+static volatile bool sleep_wake_pending;
 static volatile struct s31_lp_sleep_control * const sleep_control =
 	(volatile struct s31_lp_sleep_control *)S31_LP_SLEEP_CONTROL_ADDR;
 
@@ -191,6 +192,8 @@ static void sleep_wake(uint32_t reason, uint32_t raw, uint64_t now)
 	 * published the wake record. */
 	S31_LP_APPWR_CTRL = S31_LP_APPWR_SW_WAKEUP_REQ;
 	ulp_lp_core_wakeup_main_processor();
+	if (sleep_control->flags & S31_LP_SLEEP_F_S2IDLE)
+		sleep_wake_pending = true;
 }
 
 static void sleep_timer_fired(uint64_t now)
@@ -257,7 +260,6 @@ static void gpio_wake_poll(void)
 		return;
 	sleep_wake(S31_LP_WAKE_GPIO, triggered,
 		   ulp_lp_core_get_cpu_cycles());
-	(void)lp_core_mailbox_send(mailbox, S31_LP_MSG_WAKE, -1);
 }
 
 void LP_CORE_ISR_ATTR ulp_lp_core_lp_io_intr_handler(void)
@@ -406,6 +408,7 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 		ulp_lp_core_lp_timer_disable();
 		sleep_control->wake_reason = 0;
 		sleep_control->wake_raw = 0;
+		sleep_wake_pending = false;
 		now = ulp_lp_core_lp_timer_get_cycle_count();
 		write_u64(&sleep_control->sleep_ticks_lo,
 			  &sleep_control->sleep_ticks_hi, now);
@@ -425,11 +428,16 @@ static uint32_t sleep_command(uint32_t command, uint32_t sequence)
 				rtc_timer_ll_set_wakeup_time(1, sleep_timer_target);
 				ulp_lp_core_lp_timer_intr_enable(true);
 				sleep_control_update_crc();
-			} else {
+			} else if (sleep_control->flags & S31_LP_SLEEP_F_MEM) {
 				/* Device suspend can take longer than the requested sleep.
 				 * Start the MEM timer only after OpenSBI publishes HP_ASLEEP,
 				 * so it cannot expire while Linux is still quiescing devices. */
 				sleep_timer_target = 0;
+			} else {
+				/* S2idle and awake diagnostics do not enter the OpenSBI
+				 * MEM path and therefore never publish HP_ASLEEP.
+				 */
+				sleep_timer_arm_from_now();
 			}
 		}
 		if (sleep_control->wake_mask & S31_LP_WAKE_GPIO) {
@@ -562,6 +570,15 @@ int main(void)
 		uint32_t command;
 		uint32_t sequence;
 		uint32_t response;
+
+		/* Publish the wake IRQ outside the timer ISR.  The HP interrupt
+		 * controller retains it until Linux resumes the mailbox handler,
+		 * which then acknowledges this transaction.
+		 */
+		if (sleep_wake_pending) {
+			sleep_wake_pending = false;
+			(void)lp_core_mailbox_send(mailbox, S31_LP_MSG_WAKE, -1);
+		}
 
 		if (sleep_control->state == S31_LP_SLEEP_HP_ASLEEP &&
 		    (sleep_control->flags & S31_LP_SLEEP_F_MEM) &&

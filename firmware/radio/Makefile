@@ -53,7 +53,9 @@ IDF_PP := $(IDF_PATH)/components/esp_wifi/lib/esp32s31/libpp.a
 # Resolve one ordered archive set for both the linker and dependency graph.
 # radio-idf-deps must finish before entering this component Makefile.
 RADIO_ARCHIVES := $(shell python3 $(PROJECT_DIR)/tools/build/radio_archives.py $(RADIO_SRC)/boot_link.txt "$(IDF_PATH)" "$(RADIO_BUILD_ABS)")
-LINUX_NOFREERTOS_LINK := $(subst $(IDF_NET80211),$(LINUX_NET80211),$(RADIO_ARCHIVES))
+IDF_SECURITY := $(RADIO_BUILD_ABS)/esp-idf/esp_security/libesp_security.a
+LINUX_SECURITY := libesp_security.s31-linux.a
+LINUX_NOFREERTOS_LINK := $(subst $(IDF_SECURITY),$(LINUX_SECURITY),$(subst $(IDF_NET80211),$(LINUX_NET80211),$(RADIO_ARCHIVES)))
 
 HEAP_WRAP_APIS := heap_caps_malloc heap_caps_free heap_caps_calloc \
 	heap_caps_realloc heap_caps_aligned_alloc heap_caps_aligned_calloc \
@@ -117,10 +119,16 @@ linux-radio-linked-imports.txt: $(LINUX_RADIO_LINKED_IMPORTS)
 $(LINUX_NET80211): $(IDF_NET80211)
 	cp $< $@
 
+# Expose the IDF lock identity to the S31 libc bridge. SHA, HMAC and DS
+# can acquire this lock from inside the same archive object.
+$(LINUX_SECURITY): $(IDF_SECURITY) $(RADIO_MAKEFILE)
+	$(ESP_TOOLS)/bin/riscv32-esp-elf-objcopy --globalize-symbol=s_crypto_sha_aes_lock $< $@
+
 linux_radio.raw.o: radio_stack.linux.o s31_pp_submit.o s31_vhci.o s31_vhci_pool_wake.o nofreertos_link.txt $(RADIO_SRC)/boot_flags.txt $(RADIO_SRC)/boot_linkpath.txt $(LINUX_NET80211) $(S31RTOS_LINUX_OBJS) $(RADIO_COEX_PRINTF_OBJ) $(RADIO_MAKEFILE) $(PROJECT_DIR)/tools/build/radio_tls.py $(RADIO_SRC)/prepare_xip_sections.py
 	$(ESP_CC) -nostdlib -r -Wl,--gc-sections -Wl,--unique=.iram1* -Wl,--unique=.wifi*iram* $(HEAP_WRAP_FLAGS) $(LINUX_WRAP_FLAGS) \
 		-Wl,--undefined=s31_radio_stack_task \
 		-Wl,--undefined=s31_radio_wifi_control_task \
+		-Wl,--undefined=s31_radio_sha256_compress \
 		-Wl,--undefined=s31_radio_wifi_try_send_interface \
 		-Wl,--undefined=s31_radio_wifi_scan_task \
 		-Wl,--undefined=s31_radio_wifi_connect_task \
@@ -167,7 +175,7 @@ linux-radio-undefined.txt: linux_radio.resolved.o
 
 linux-radio-localize.txt: linux_radio.resolved.o $(RADIO_MAKEFILE)
 	$(ESP_TOOLS)/bin/riscv32-esp-elf-nm -g --defined-only $< | \
-		awk '{ n=$$NF; if (n !~ /^(s31_radio_fw_abi_version|s31_radio_(stack|shutdown|bt_(enable|disable)|wifi_(scan|connect|disconnect|control))_task|s31_radio_wifi_(read_mac|clock_enable|clock_disable)|s31_radio_(vhci|wifi)_try_send|s31_radio_wifi_try_send_interface|s31_radio_coex_status|s31_rtos_(init|tick|hard_tick|free|task_release|isr_depth)|s31_linux_timer_next_deadline_ns|xTaskCreatePinnedToCore)$$/) print n; }' | \
+		awk '{ n=$$NF; if (n !~ /^(s31_radio_fw_abi_version|s31_radio_(stack|shutdown|bt_(enable|disable)|wifi_(scan|connect|disconnect|control))_task|s31_radio_wifi_(read_mac|clock_enable|clock_disable)|s31_radio_(vhci|wifi)_try_send|s31_radio_wifi_try_send_interface|s31_radio_coex_status|s31_rtos_(init|tick|hard_tick|free|task_release|isr_depth)|s31_linux_timer_next_deadline_ns|xTaskCreatePinnedToCore|s31_radio_sha256_compress)$$/) print n; }' | \
 		sort -u > $@
 
 linux_radio.localized.o: linux_radio.resolved.o linux-radio-localize.txt
@@ -273,7 +281,7 @@ linux_radio.raw.o: $(LINUX_NOFREERTOS_LINK) .s31-build-config \
 clean:
 	rm -f *.o *.d s31_rtos/*.o s31_rtos/*.d .s31-build-config \
 		linux-radio-undefined.txt linux-radio-localize.txt linux-radio-linked-imports.txt \
-		nofreertos_link.txt undefined.txt $(LINUX_NET80211) \
+		nofreertos_link.txt undefined.txt $(LINUX_NET80211) $(LINUX_SECURITY) \
 		.s31-net80211/ieee80211_api.o
 
 endif # CURDIR == RADIO_OUT

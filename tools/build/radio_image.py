@@ -42,6 +42,7 @@ EXPORTS = (
     's31_linux_timer_next_deadline_ns', 's31_rtos_hard_tick', 's31_rtos_free',
     's31_rtos_task_release', 'xTaskCreatePinnedToCore', 's31_rtos_isr_depth',
 )
+SHA256_COMPRESS_EXPORT = 's31_radio_sha256_compress'
 EMPTY_CLOCK_IMPORTS = frozenset(('_esp_libc_clock_array_start', '_esp_libc_clock_array_end'))
 
 class Elf:
@@ -146,11 +147,13 @@ def build(args):
                            for line in manifest.read_text().splitlines()) - {''})
     selection = select_iram_sections(payload, requested)
     keep_iram_symbols = [n for rec in selection for n in rec['functions']]
+    optional_exports = ((SHA256_COMPRESS_EXPORT,)
+                        if SHA256_COMPRESS_EXPORT in payload.symbols else ())
     # Drop unused undefined symbols before generating the binding contract.
     stripped = out / 'radio-xip-input.o'
     run(prefix + 'objcopy', '--strip-unneeded', '--remove-section=.comment',
         *['--keep-symbol=' + name
-          for name in (*EXPORTS, 's31_radio_fw_abi_version', *keep_iram_symbols)],
+          for name in (*EXPORTS, *optional_exports, 's31_radio_fw_abi_version', *keep_iram_symbols)],
         args.payload, stripped)
     if selection:
         renamed = out / 'radio-xip-selected.o'
@@ -164,7 +167,7 @@ def build(args):
     if abi[1] != 4 or struct.unpack_from('<I', payload.data,
             abi_section[4] + abi[0])[0] != 2:
         raise ValueError('unsupported radio payload ABI')
-    for name in EXPORTS[:-1]:
+    for name in (*EXPORTS[:-1], *optional_exports):
         if payload.symbols[name][2] & 15 != 2:
             raise ValueError('radio export is not a function: ' + name)
     undefined = sorted(n for n, s in payload.symbols.items() if s[3] == 0)
@@ -289,6 +292,8 @@ def build(args):
     if not iram_size or iram_size > WIFI_IRAM_CAPACITY:
         raise ValueError('invalid Wi-Fi IRAM size')
     struct.pack_into('<2I', header, IRAM_FIELDS_OFFSET, iram_offset, iram_size)
+    if optional_exports:
+        struct.pack_into('<I', header, IRAM_FIELDS_OFFSET + 8, sym(SHA256_COMPRESS_EXPORT))
     struct.pack_into('<I', header, 60, zlib.crc32(header))
     if size > SLOT_SIZE:
         raise ValueError('XIP image exceeds radio slot')

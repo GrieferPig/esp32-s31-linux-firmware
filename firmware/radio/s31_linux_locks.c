@@ -1,12 +1,68 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* ESP-IDF libc locks without M-mode xPortCanYield() CSR reads. */
+#include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/lock.h>
 
+#include "esp_crypto_periph_clk.h"
+#include "hal/sha_ll.h"
 #include "s31_rtos/s31_rtos.h"
 
 #define S31_LOCK_SLOTS 32
+
+#define S31_SHA_IDF 1U
+#define S31_SHA_LINUX 2U
+#define S31_SHA_BLOCK_TIMEOUT_NS 100000U
+
+extern _lock_t s_crypto_sha_aes_lock;
+static uint32_t s31_sha_owner;
+
+/*
+ * ESP32-S31 TRM ch.17 SHA Accelerator: HMAC and DS share SHA_H_MEM
+ * and can reset a SHA operation. The IDF esp_crypto_lock.c SHA/AES
+ * mutex covers both users before their clock/reset sequences start.
+ */
+static void s31_sha_idf_acquire(void)
+{
+    __atomic_fetch_or(&s31_sha_owner, S31_SHA_IDF, __ATOMIC_ACQ_REL);
+    while (__atomic_load_n(&s31_sha_owner, __ATOMIC_ACQUIRE) & S31_SHA_LINUX)
+        __asm__ volatile ("nop");
+}
+
+/*
+ * Called by Linux with IRQs masked. Hold the lease for one SHA-256
+ * block with caller-supplied SHA_H_MEM chaining words.
+ */
+int s31_radio_sha256_compress(uint32_t state[8], const uint32_t block[16])
+{
+    uint32_t idle = 0;
+    uint64_t start;
+    int ret = 0;
+
+    if (!__atomic_compare_exchange_n(&s31_sha_owner, &idle, S31_SHA_LINUX,
+                                     false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+        return -EBUSY;
+
+    esp_crypto_sha_enable_periph_clk(true);
+    sha_ll_set_mode(SHA2_256);
+    sha_ll_write_digest(SHA2_256, state, 8);
+    sha_ll_fill_text_block(block, 16);
+    sha_ll_continue_block(SHA2_256);
+    start = s31_linux_time_ns();
+    while (sha_ll_busy()) {
+        if (s31_linux_time_ns() - start >= S31_SHA_BLOCK_TIMEOUT_NS) {
+            ret = -ETIMEDOUT;
+            break;
+        }
+    }
+    if (!ret)
+        sha_ll_read_digest(SHA2_256, state, 8);
+    esp_crypto_sha_enable_periph_clk(false);
+    __atomic_fetch_and(&s31_sha_owner, ~S31_SHA_LINUX, __ATOMIC_RELEASE);
+    return ret;
+}
 
 struct __lock __lock___libc_recursive_mutex;
 struct __lock __lock___sinit_recursive_mutex;
@@ -144,6 +200,8 @@ void _lock_acquire(_lock_t *lock)
 	if (lock && !*lock)
 		_lock_init(lock);
 	s31_lock_require(lock ? *lock : NULL, S31_MUTEX_NORMAL);
+	if (lock == &s_crypto_sha_aes_lock)
+		s31_sha_idf_acquire();
 }
 
 void _lock_acquire_recursive(_lock_t *lock)
@@ -155,9 +213,22 @@ void _lock_acquire_recursive(_lock_t *lock)
 
 int _lock_try_acquire(_lock_t *lock)
 {
+	int ret;
+
 	if (lock && !*lock)
 		_lock_init(lock);
-	return lock && *lock ? s31_lock_take(*lock, 0, S31_MUTEX_NORMAL) : -1;
+	ret = lock && *lock ? s31_lock_take(*lock, 0, S31_MUTEX_NORMAL) : -1;
+
+	if (!ret && lock == &s_crypto_sha_aes_lock) {
+		uint32_t idle = 0;
+
+		if (!__atomic_compare_exchange_n(&s31_sha_owner, &idle, S31_SHA_IDF,
+		                                 false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+			s31_lock_give(*lock);
+			ret = -1;
+		}
+	}
+	return ret;
 }
 
 int _lock_try_acquire_recursive(_lock_t *lock)
@@ -169,6 +240,8 @@ int _lock_try_acquire_recursive(_lock_t *lock)
 
 void _lock_release(_lock_t *lock)
 {
+	if (lock == &s_crypto_sha_aes_lock)
+		__atomic_fetch_and(&s31_sha_owner, ~S31_SHA_IDF, __ATOMIC_RELEASE);
 	if (lock && *lock)
 		s31_lock_give(*lock);
 }
